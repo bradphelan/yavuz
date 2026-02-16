@@ -15,38 +15,38 @@ This template shows how to create a new demo for the Yavuz project.
    My New Demo
    Brief description of what this demo does.
    """
-   
+
    import numpy as np
    import matplotlib.pyplot as plt
    from matplotlib.widgets import Slider, Button
-   
-   
+
+
    class MyNewDemo:
        def __init__(self):
            self.fig, self.ax = plt.subplots(figsize=(10, 8))
            # Setup your visualization
-           
+
        def setup_controls(self):
            """Setup GUI controls."""
            # Add sliders, buttons, etc.
            pass
-       
+
        def update_plot(self):
            """Update the visualization."""
            # Your update logic here
            pass
-       
+
        def show(self):
            """Display the demo."""
            plt.show()
-   
-   
+
+
    def main():
        """Run the demo."""
        demo = MyNewDemo()
        demo.show()
-   
-   
+
+
    if __name__ == "__main__":
        main()
    ```
@@ -54,27 +54,27 @@ This template shows how to create a new demo for the Yavuz project.
 3. **Create a README.md** in your demo folder:
    ```markdown
    # My New Demo
-   
+
    Brief description of the demo.
-   
+
    ## Features
    - Feature 1
    - Feature 2
-   
+
    ## Usage
    ```bash
    python my_new_demo.py
    ```
-   
+
    ## Controls
    - Control 1: Description
    - Control 2: Description
    ```
 
 4. **Register your demo** in `launcher.py`:
-   
+
    Open `launcher.py` and add your demo to the `demo_info` dictionary in the `discover_demos()` method:
-   
+
    ```python
    "my_new_demo": {
        "name": "My New Demo Display Name",
@@ -91,7 +91,7 @@ This template shows how to create a new demo for the Yavuz project.
    ```bash
    # Test directly
    python demos/my_new_demo/my_new_demo.py
-   
+
    # Test from launcher
    python launcher.py
    ```
