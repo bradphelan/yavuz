@@ -1,6 +1,6 @@
 # Yavuz
 
-A Python project for testing and visualizing algorithms with interactive 3D graphics and numerical computations.
+Yavuz is a structured sandbox app for algorithm development in VS Code. The sandbox is the app: use Copilot (or any AI assistant) to generate new algorithm demos, then run them from the launcher.
 
 ## Features
 
@@ -47,22 +47,11 @@ source .venv/bin/activate  # On Linux/Mac
 uv pip install -r requirements.txt
 ```
 
-For development:
-```bash
-uv pip install -r requirements-dev.txt
-```
-
 #### Using pip
 
 Alternatively, use pip directly:
 ```bash
 pip install -r requirements.txt
-```
-
-For development:
-```bash
-pip install -e .
-pip install -r requirements-dev.txt
 ```
 
 ## Quick Start
@@ -81,6 +70,8 @@ python launcher.py
 ```
 
 This opens an interactive interface where you can browse and launch any available demo with a single click.
+
+The intended workflow is to ask your AI assistant to generate a new algorithm demo under `demos/`, then refresh the launcher to run it.
 
 ## Available Demos
 
