@@ -8,6 +8,7 @@ from urllib.parse import quote
 
 import numpy as np
 import pyvista as pv
+from PySide6 import QtCore, QtWidgets
 from pyvistaqt import BackgroundPlotter
 
 
@@ -26,12 +27,14 @@ class InteractiveSurface:
         self.amplitude = 1.0
         self.phase = 0.0
 
-        # Create initial surface
+        self.grid = None
         self.mesh_actor = None
-        self.update_plot()
+        self._camera_initialized = False
 
-        # Create sliders
+        # Create controls
         self.setup_controls()
+        self._build_scene()
+        self.update_plot()
 
     def compute_surface(self):
         """Compute the surface based on current parameters."""
@@ -43,68 +46,94 @@ class InteractiveSurface:
         return X, Y, Z
 
     def setup_controls(self):
-        """Setup GUI controls (sliders and text boxes)."""
-        self.plotter.add_slider_widget(
-            self.update_frequency,
-            [0.1, 5.0],
-            value=self.frequency,
-            title="Frequency",
-            pointa=(0.02, 0.1),
-            pointb=(0.34, 0.1),
-        )
-        self.plotter.add_slider_widget(
-            self.update_amplitude,
-            [0.1, 3.0],
-            value=self.amplitude,
-            title="Amplitude",
-            pointa=(0.36, 0.1),
-            pointb=(0.68, 0.1),
-        )
-        self.plotter.add_slider_widget(
-            self.update_phase,
-            [0.0, 2 * np.pi],
-            value=self.phase,
-            title="Phase",
-            pointa=(0.7, 0.1),
-            pointb=(0.98, 0.1),
-        )
+        """Setup GUI controls (dock panel)."""
+        dock = QtWidgets.QDockWidget("Controls", self.plotter.app_window)
+        dock.setAllowedAreas(QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea)
+        panel = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(panel)
+
+        self.frequency_slider = self._make_slider(1, 50, int(self.frequency * 10))
+        self.amplitude_slider = self._make_slider(1, 30, int(self.amplitude * 10))
+        self.phase_slider = self._make_slider(0, 628, int(self.phase * 100))
+
+        layout.addWidget(QtWidgets.QLabel("Frequency"))
+        layout.addWidget(self.frequency_slider)
+        layout.addWidget(QtWidgets.QLabel("Amplitude"))
+        layout.addWidget(self.amplitude_slider)
+        layout.addWidget(QtWidgets.QLabel("Phase"))
+        layout.addWidget(self.phase_slider)
+        layout.addStretch(1)
+
+        self.frequency_slider.valueChanged.connect(self._on_frequency_slider)
+        self.amplitude_slider.valueChanged.connect(self._on_amplitude_slider)
+        self.phase_slider.valueChanged.connect(self._on_phase_slider)
+
+        dock.setWidget(panel)
+        self.plotter.app_window.addDockWidget(QtCore.Qt.RightDockWidgetArea, dock)
+
+    @staticmethod
+    def _make_slider(min_val, max_val, value):
+        slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        slider.setMinimum(min_val)
+        slider.setMaximum(max_val)
+        slider.setValue(value)
+        return slider
+
+    def _on_frequency_slider(self, value):
+        self.update_frequency(value / 10.0)
+
+    def _on_amplitude_slider(self, value):
+        self.update_amplitude(value / 10.0)
+
+    def _on_phase_slider(self, value):
+        self.update_phase(value / 100.0)
 
     def update_frequency(self, val):
         """Update frequency parameter."""
-        self.frequency = val
+        self.frequency = float(val)
         self.update_plot()
 
     def update_amplitude(self, val):
         """Update amplitude parameter."""
-        self.amplitude = val
+        self.amplitude = float(val)
         self.update_plot()
 
     def update_phase(self, val):
         """Update phase parameter."""
-        self.phase = val
+        self.phase = float(val)
         self.update_plot()
 
-    def update_plot(self):
-        """Redraw the surface with updated parameters."""
-        if self.mesh_actor:
-            self.plotter.remove_actor(self.mesh_actor)
-
+    def _build_scene(self):
         x, y, z = self.compute_surface()
-        grid = pv.StructuredGrid(x, y, z)
-        grid["height"] = z.ravel(order="F")
-
+        self.grid = pv.StructuredGrid(x, y, z)
+        self.grid["height"] = z.ravel(order="F")
         self.mesh_actor = self.plotter.add_mesh(
-            grid,
+            self.grid,
             scalars="height",
             cmap="viridis",
             smooth_shading=True,
         )
-        self.plotter.reset_camera()
+
+    def update_plot(self):
+        """Redraw the surface with updated parameters."""
+        x, y, z = self.compute_surface()
+        points = np.column_stack([x.ravel(order="F"), y.ravel(order="F"), z.ravel(order="F")])
+        self.grid.points = points
+        self.grid.point_data["height"] = z.ravel(order="F")
+        self.grid.Modified()
+        if self.mesh_actor is not None:
+            self.mesh_actor.mapper.SetInputData(self.grid)
+            self.mesh_actor.mapper.Update()
+
+        if not self._camera_initialized:
+            self.plotter.reset_camera()
+            self._camera_initialized = True
+        self.plotter.render()
 
     def show(self):
         """Display the interactive plot."""
         self.plotter.show()
-        self.plotter.app.exec_()
+        self.plotter.app.exec()
 
 
 def main():
