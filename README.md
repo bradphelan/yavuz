@@ -1,14 +1,14 @@
 # Yavuz
 
-Yavuz is a structured sandbox app for algorithm development in VS Code. The sandbox is the app: use Copilot (or any AI assistant) to generate new algorithm demos, then run them from the launcher.
+Yavuz is an AI-first algorithm sandbox for VS Code. The sandbox is the app: start with a prompt, let your AI assistant generate the first version, then keep evolving the algorithm through AI-guided iterations instead of writing everything by hand.
 
 ## Features
 
+- 🤖 AI sandbox workflow: prompt, generate, run, refine
+- 🧰 Lightweight framework to turn algorithm ideas into runnable demos fast
+- ⚡ Fast vector math with numpy when algorithms avoid manual Python loops
 - 🎨 Interactive 3D visualizations using matplotlib
-- 🔢 Numerical algorithms with numpy
 - 🎛️ GUI controls (sliders, buttons, text boxes)
-- 📊 Algorithm visualization tools
-- 🧮 Numerical methods demonstrations
 - 🚀 Easy-to-use demo launcher interface
 
 ## Installation
