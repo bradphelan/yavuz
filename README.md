@@ -13,61 +13,9 @@ Yavuz is an AI-first algorithm sandbox for VS Code. The sandbox is the app: star
 
 ## Installation
 
-### Quick Setup (Recommended)
-
-**Windows:**
-```bash
-.\setup.bat
-```
-
-**Linux/Mac:**
-```bash
-chmod +x setup.sh
-./setup.sh
-```
-
-This will automatically install `uv`, create a virtual environment, and install all dependencies.
-
-### Manual Setup
-
-#### Using uv (Recommended)
-
-Install `uv` if you haven't already:
-```bash
-pip install uv
-```
-
-Create a virtual environment and install dependencies:
-```bash
-uv venv
-.venv\Scripts\activate  # On Windows
-# or
-source .venv/bin/activate  # On Linux/Mac
-
-uv pip install -r requirements.txt
-```
-
-#### Using pip
-
-Alternatively, use pip directly:
-```bash
-pip install -r requirements.txt
-```
-
-## Quick Start
-
-Activate your virtual environment:
-```bash
-.venv\Scripts\activate  # Windows
-# or
-source .venv/bin/activate  # Linux/Mac
-```
-
-Launch the demo selector GUI:
-
 ```bash
 # Windows
-start.bat
+.\start.bat
 
 # Linux/Mac
 ./start.sh
