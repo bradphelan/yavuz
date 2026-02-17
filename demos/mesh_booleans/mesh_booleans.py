@@ -9,6 +9,7 @@ from urllib.parse import quote
 import numpy as np
 import manifold3d as m
 import pyvista as pv
+from PySide6 import QtCore, QtWidgets
 from pyvistaqt import BackgroundPlotter
 
 
@@ -19,8 +20,15 @@ class MeshBooleanDemo:
             title="Mesh Boolean Playground",
         )
         self.plotter.set_background("white")
-        self.plotter.add_axes()
         self.plotter.show_grid()
+
+        # Add lighting for better visuals
+        light1 = pv.Light(position=(3, 3, 3), light_type='cameralight')
+        light2 = pv.Light(position=(-3, -3, 3), light_type='cameralight', intensity=0.5)
+        light3 = pv.Light(position=(0, 3, -3), light_type='cameralight', intensity=0.3)
+        self.plotter.add_light(light1)
+        self.plotter.add_light(light2)
+        self.plotter.add_light(light3)
 
         self.shape_options = ["Cube", "Sphere", "Cylinder", "Tetrahedron"]
         self.op_options = ["Union", "Intersect", "Subtract (A - B)"]
@@ -38,66 +46,85 @@ class MeshBooleanDemo:
             "Result": (0.17, 0.63, 0.17),
         }
 
-        self.actors = {"A": None, "B": None, "Result": None}
-        self.hud = self.plotter.add_text("", position="upper_left", font_size=10)
+        self.actors = {
+            "A_clipped": None,
+            "B_clipped": None,
+            "Result": None
+        }
+        self.meshes = {
+            "A_clipped": None,
+            "B_clipped": None,
+            "Result": None
+        }
 
         self._setup_controls()
+        self._build_scene()
         self._update_scene()
-        self._update_hud()
 
     def _setup_controls(self):
-        self.plotter.add_slider_widget(
-            self._on_shape_a,
-            [0, len(self.shape_options) - 1],
-            value=self.shape_a,
-            title="Shape A",
-            pointa=(0.02, 0.1),
-            pointb=(0.32, 0.1),
-        )
-        self.plotter.add_slider_widget(
-            self._on_shape_b,
-            [0, len(self.shape_options) - 1],
-            value=self.shape_b,
-            title="Shape B",
-            pointa=(0.35, 0.1),
-            pointb=(0.65, 0.1),
-        )
-        self.plotter.add_slider_widget(
-            self._on_operation,
-            [0, len(self.op_options) - 1],
-            value=self.operation,
-            title="Operation",
-            pointa=(0.68, 0.1),
-            pointb=(0.98, 0.1),
-        )
-        self.plotter.add_slider_widget(
-            self._on_distance,
-            [0.2, 3.5],
-            value=self.distance,
-            title="Distance",
-            pointa=(0.02, 0.04),
-            pointb=(0.48, 0.04),
-        )
-        self.plotter.add_slider_widget(
-            self._on_shear,
-            [-2.0, 2.0],
-            value=self.shear,
-            title="Shear",
-            pointa=(0.52, 0.04),
-            pointb=(0.98, 0.04),
-        )
-        self.plotter.add_checkbox_button_widget(
-            self._on_wireframe,
-            value=self.wireframe,
-            position=(10, 10),
-            size=30,
-        )
-        self.plotter.add_text(
-            "Keys: R reset, N random",
-            position=(60, 14),
-            font_size=10,
-            name="controls_hint",
-        )
+        dock = QtWidgets.QDockWidget("Controls", self.plotter)
+        dock.setAllowedAreas(QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea)
+        panel = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(panel)
+
+        # Shape A combo box
+        layout.addWidget(QtWidgets.QLabel("Shape A"))
+        self.shape_a_combo = QtWidgets.QComboBox()
+        self.shape_a_combo.addItems(self.shape_options)
+        self.shape_a_combo.setCurrentIndex(self.shape_a)
+        self.shape_a_combo.currentIndexChanged.connect(self._on_shape_a)
+        layout.addWidget(self.shape_a_combo)
+
+        # Shape B combo box
+        layout.addWidget(QtWidgets.QLabel("Shape B"))
+        self.shape_b_combo = QtWidgets.QComboBox()
+        self.shape_b_combo.addItems(self.shape_options)
+        self.shape_b_combo.setCurrentIndex(self.shape_b)
+        self.shape_b_combo.currentIndexChanged.connect(self._on_shape_b)
+        layout.addWidget(self.shape_b_combo)
+
+        # Operation combo box
+        layout.addWidget(QtWidgets.QLabel("Operation"))
+        self.op_combo = QtWidgets.QComboBox()
+        self.op_combo.addItems(self.op_options)
+        self.op_combo.setCurrentIndex(self.operation)
+        self.op_combo.currentIndexChanged.connect(self._on_operation)
+        layout.addWidget(self.op_combo)
+
+        # Distance slider (0.2-3.5, scaled as 2-35)
+        layout.addWidget(QtWidgets.QLabel("Distance"))
+        self.dist_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.dist_slider.setMinimum(2)
+        self.dist_slider.setMaximum(35)
+        self.dist_slider.setValue(int(self.distance * 10))
+        self.dist_slider.setTickPosition(QtWidgets.QSlider.TicksBelow)
+        self.dist_slider.setTickInterval(2)
+        self.dist_slider.valueChanged.connect(self._on_distance)
+        layout.addWidget(self.dist_slider)
+
+        # Shear slider (-2.0-2.0, scaled as -20-20)
+        layout.addWidget(QtWidgets.QLabel("Shear"))
+        self.shear_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.shear_slider.setMinimum(-20)
+        self.shear_slider.setMaximum(20)
+        self.shear_slider.setValue(int(self.shear * 10))
+        self.shear_slider.setTickPosition(QtWidgets.QSlider.TicksBelow)
+        self.shear_slider.setTickInterval(5)
+        self.shear_slider.valueChanged.connect(self._on_shear)
+        layout.addWidget(self.shear_slider)
+
+        # Wireframe checkbox
+        self.wire_checkbox = QtWidgets.QCheckBox("Wireframe")
+        self.wire_checkbox.setChecked(self.wireframe)
+        self.wire_checkbox.stateChanged.connect(self._on_wireframe)
+        layout.addWidget(self.wire_checkbox)
+
+        # Stretch to push controls to top
+        layout.addStretch(1)
+
+        dock.setWidget(panel)
+        self.plotter.app_window.addDockWidget(QtCore.Qt.RightDockWidgetArea, dock)
+
         self.plotter.add_key_event("r", self._reset)
         self.plotter.add_key_event("n", self._randomize)
 
@@ -129,28 +156,55 @@ class MeshBooleanDemo:
         faces = np.hstack((face_sizes, faces)).ravel()
         return pv.PolyData(vertices, faces)
 
-    def _add_mesh(self, key, mesh, color, opacity):
-        if self.actors[key]:
-            self.plotter.remove_actor(self.actors[key])
-            self.actors[key] = None
-        if mesh is None:
+    def _build_scene(self):
+        """Initialize mesh actors once."""
+        # Create placeholder meshes and actors
+        for key in ["A_clipped", "B_clipped", "Result"]:
+            # Start with a simple sphere as placeholder
+            mesh = pv.Sphere(radius=0.1)
+            if self.wireframe:
+                actor = self.plotter.add_mesh(
+                    mesh,
+                    color=self.colors.get(key.split("_")[0], self.colors["Result"]),
+                    opacity=1.0,
+                    style="wireframe",
+                    line_width=1,
+                )
+            else:
+                opacity = 0.05 if "clipped" in key else 1.0
+                actor = self.plotter.add_mesh(
+                    mesh,
+                    color=self.colors.get(key.split("_")[0], self.colors["Result"]),
+                    opacity=opacity,
+                    smooth_shading=True,
+                )
+            self.meshes[key] = mesh
+            self.actors[key] = actor
+            # Hide initially
+            actor.SetVisibility(False)
+
+    def _update_mesh(self, key, new_mesh, opacity):
+        """Update mesh in-place without removing actor."""
+        if new_mesh is None:
+            # Hide if no mesh
+            if self.actors[key]:
+                self.actors[key].SetVisibility(False)
             return
-        if self.wireframe:
-            actor = self.plotter.add_mesh(
-                mesh,
-                color=color,
-                opacity=1.0,
-                style="wireframe",
-                line_width=1,
-            )
-        else:
-            actor = self.plotter.add_mesh(
-                mesh,
-                color=color,
-                opacity=opacity,
-                smooth_shading=True,
-            )
-        self.actors[key] = actor
+
+        # Update mesh data
+        self.meshes[key].copy_from(new_mesh)
+        self.meshes[key].Modified()
+
+        # Update mapper
+        self.actors[key].mapper.SetInputData(self.meshes[key])
+        self.actors[key].mapper.Update()
+
+        # Update properties
+        if not self.wireframe:
+            self.actors[key].GetProperty().SetOpacity(opacity)
+
+        # Show the actor
+        self.actors[key].SetVisibility(True)
 
     def _update_scene(self):
         pos_a = np.array([-0.6, 0.0, 0.0], dtype=float)
@@ -160,16 +214,34 @@ class MeshBooleanDemo:
         shape_b = self._make_shape(self.shape_options[self.shape_b]).translate(tuple(pos_b))
         result = self._apply_boolean(shape_a, shape_b)
 
-        mesh_a = self._polydata_from_manifold(shape_a)
-        mesh_b = self._polydata_from_manifold(shape_b)
-        mesh_r = self._polydata_from_manifold(result)
+        # Compute clipped parts (parts that are removed)
+        clipped_a = None
+        clipped_b = None
 
-        self._add_mesh("A", mesh_a, self.colors["A"], 0.35)
-        self._add_mesh("B", mesh_b, self.colors["B"], 0.35)
-        self._add_mesh("Result", mesh_r, self.colors["Result"], 0.85)
+        if not result.is_empty():
+            # Clipped A = A - Result (parts of A that are cut away)
+            clipped_a = m.Manifold.batch_boolean([shape_a, result], m.OpType.Subtract)
+            # Clipped B = B - Result (parts of B that are cut away)
+            clipped_b = m.Manifold.batch_boolean([shape_b, result], m.OpType.Subtract)
+        else:
+            # When result is empty (no intersection), show original shapes at full opacity
+            clipped_a = shape_a
+            clipped_b = shape_b
 
-        bounds = self._combine_bounds([mesh_a, mesh_b, mesh_r])
+        mesh_a_clipped = self._polydata_from_manifold(clipped_a)
+        mesh_b_clipped = self._polydata_from_manifold(clipped_b)
+        mesh_result = self._polydata_from_manifold(result)
+
+        # Update meshes in place (no remove/add to avoid flickering)
+        # When result is empty, show originals at 1.0 opacity, otherwise show clipped at 0.05
+        opacity_clipped = 1.0 if result.is_empty() else 0.05
+        self._update_mesh("A_clipped", mesh_a_clipped, opacity_clipped)
+        self._update_mesh("B_clipped", mesh_b_clipped, opacity_clipped)
+        self._update_mesh("Result", mesh_result, 1.0)
+
+        bounds = self._combine_bounds([mesh_a_clipped, mesh_b_clipped, mesh_result])
         self.plotter.reset_camera(bounds=bounds)
+        self.plotter.render()
 
     def _combine_bounds(self, meshes):
         valid = [mesh.bounds for mesh in meshes if mesh is not None]
@@ -179,52 +251,34 @@ class MeshBooleanDemo:
         maxs = np.max(np.array([b[1::2] for b in valid]), axis=0)
         return (mins[0], maxs[0], mins[1], maxs[1], mins[2], maxs[2])
 
-    def _update_hud(self):
-        op_label = self.op_options[self.operation]
-        mode = "Wireframe" if self.wireframe else "Solid"
-        text = (
-            "Mesh Booleans (PyVista)\n"
-            f"Shape A: {self.shape_options[self.shape_a]}\n"
-            f"Shape B: {self.shape_options[self.shape_b]}\n"
-            f"Op: {op_label}\n"
-            f"Distance: {self.distance:.2f}  Shear: {self.shear:.2f}\n"
-            f"Mode: {mode}\n\n"
-            "Controls:\n"
-            "- Sliders for shapes, operation, distance, shear\n"
-            "- Checkbox toggles wireframe\n"
-            "- Buttons reset or randomize"
-        )
-        self.hud.SetInput(text)
-
     def _on_shape_a(self, value):
-        self.shape_a = int(round(value))
+        self.shape_a = int(value)
         self._update_scene()
-        self._update_hud()
 
     def _on_shape_b(self, value):
-        self.shape_b = int(round(value))
+        self.shape_b = int(value)
         self._update_scene()
-        self._update_hud()
 
     def _on_operation(self, value):
-        self.operation = int(round(value))
+        self.operation = int(value)
         self._update_scene()
-        self._update_hud()
 
     def _on_distance(self, value):
-        self.distance = float(value)
+        self.distance = value / 10.0
         self._update_scene()
-        self._update_hud()
 
     def _on_shear(self, value):
-        self.shear = float(value)
+        self.shear = value / 10.0
         self._update_scene()
-        self._update_hud()
 
     def _on_wireframe(self, state):
         self.wireframe = bool(state)
+        # Rebuild scene to change rendering style
+        for key in self.actors:
+            if self.actors[key]:
+                self.plotter.remove_actor(self.actors[key])
+        self._build_scene()
         self._update_scene()
-        self._update_hud()
 
     def _reset(self):
         self.shape_a = 0
@@ -233,8 +287,13 @@ class MeshBooleanDemo:
         self.distance = 1.8
         self.shear = 0.0
         self.wireframe = False
+        self.shape_a_combo.setCurrentIndex(self.shape_a)
+        self.shape_b_combo.setCurrentIndex(self.shape_b)
+        self.op_combo.setCurrentIndex(self.operation)
+        self.dist_slider.setValue(int(self.distance * 10))
+        self.shear_slider.setValue(int(self.shear * 10))
+        self.wire_checkbox.setChecked(self.wireframe)
         self._update_scene()
-        self._update_hud()
 
     def _randomize(self):
         rng = np.random.default_rng()
@@ -243,12 +302,16 @@ class MeshBooleanDemo:
         self.operation = int(rng.integers(0, len(self.op_options)))
         self.distance = float(rng.uniform(0.4, 3.2))
         self.shear = float(rng.uniform(-1.6, 1.6))
+        self.shape_a_combo.setCurrentIndex(self.shape_a)
+        self.shape_b_combo.setCurrentIndex(self.shape_b)
+        self.op_combo.setCurrentIndex(self.operation)
+        self.dist_slider.setValue(int(self.distance * 10))
+        self.shear_slider.setValue(int(self.shear * 10))
         self._update_scene()
-        self._update_hud()
 
     def show(self):
         self.plotter.show()
-        self.plotter.app.exec_()
+        self.plotter.app.exec()
 
 
 def main():
@@ -275,7 +338,9 @@ DEMO_MANIFEST = {
     "Features:\n"
     "- Cube, sphere, cylinder, and tetrahedron operands\n"
     "- Union, intersection, and subtraction booleans\n"
+    "- Dropdowns for shape and operation selection\n"
     "- Sliders for distance and shear\n"
+    "- Visual distinction: result (1.0 opacity) vs clipped parts (0.05 opacity)\n"
     "- Wireframe/solid toggle",
 }
 

@@ -8,6 +8,7 @@ from urllib.parse import quote
 
 import numpy as np
 import pyvista as pv
+from PySide6 import QtCore, QtWidgets
 from pyvistaqt import BackgroundPlotter
 
 
@@ -19,7 +20,6 @@ class Parametric3DVisualizer:
         )
         self.plotter.set_background("white")
         self.plotter.add_axes()
-        self.plotter.show_grid()
 
         # Parameters
         self.param_a = 1.0
@@ -30,8 +30,9 @@ class Parametric3DVisualizer:
         self.curve_type = self.curve_types[0]
 
         # Initial plot
-        self.actor = None
-        self.update_plot()
+        self.mesh = None
+        self.mesh_actor = None
+        self._build_scene()
 
         # Setup controls
         self.setup_controls()
@@ -84,99 +85,159 @@ class Parametric3DVisualizer:
         elif self.curve_type == 'Spiral':
             return self.compute_spiral()
 
-    def setup_controls(self):
-        """Setup GUI controls."""
-        self.plotter.add_slider_widget(
-            self.update_param_a,
-            [0.1, 5.0],
-            value=self.param_a,
-            title="Param A",
-            pointa=(0.02, 0.1),
-            pointb=(0.3, 0.1),
-        )
-        self.plotter.add_slider_widget(
-            self.update_param_b,
-            [0.1, 5.0],
-            value=self.param_b,
-            title="Param B",
-            pointa=(0.35, 0.1),
-            pointb=(0.63, 0.1),
-        )
-        self.plotter.add_slider_widget(
-            self.update_param_c,
-            [0.1, 5.0],
-            value=self.param_c,
-            title="Param C",
-            pointa=(0.68, 0.1),
-            pointb=(0.96, 0.1),
-        )
-        self.plotter.add_slider_widget(
-            self.update_curve_type,
-            [0, len(self.curve_types) - 1],
-            value=0,
-            title="Curve Type",
-            pointa=(0.02, 0.04),
-            pointb=(0.48, 0.04),
-        )
-        self.plotter.add_slider_widget(
-            self.update_points,
-            [200, 3000],
-            value=self.n_points,
-            title="Points",
-            pointa=(0.55, 0.04),
-            pointb=(0.96, 0.04),
-        )
-
-    def update_param_a(self, val):
-        """Update parameter A."""
-        self.param_a = val
-        self.update_plot()
-
-    def update_param_b(self, val):
-        """Update parameter B."""
-        self.param_b = val
-        self.update_plot()
-
-    def update_param_c(self, val):
-        """Update parameter C."""
-        self.param_c = val
-        self.update_plot()
-
-    def update_curve_type(self, label):
-        """Update curve type."""
-        idx = int(round(label))
-        idx = max(0, min(idx, len(self.curve_types) - 1))
-        self.curve_type = self.curve_types[idx]
-        self.update_plot()
-
-    def update_points(self, text):
-        """Update number of points."""
-        self.n_points = max(50, int(round(text)))
-        self.update_plot()
-
-    def update_plot(self):
-        """Redraw the curve with updated parameters."""
-        if self.actor:
-            self.plotter.remove_actor(self.actor)
-
+    def _build_scene(self):
+        """Build the initial scene with mesh."""
         x, y, z = self.get_curve_data()
         points = np.column_stack((x, y, z))
-        poly = pv.lines_from_points(points)
-        poly["t"] = np.linspace(0, 1, len(points))
+        self.mesh = pv.lines_from_points(points)
+        self.mesh["t"] = np.linspace(0, 1, len(points))
 
-        self.actor = self.plotter.add_mesh(
-            poly,
+        self.mesh_actor = self.plotter.add_mesh(
+            self.mesh,
             scalars="t",
             cmap="viridis",
             line_width=3,
         )
 
+        # Get bounds and add padding for initial grid
+        bounds = self.mesh.bounds
+        x_range = bounds[1] - bounds[0]
+        y_range = bounds[3] - bounds[2]
+        z_range = bounds[5] - bounds[4]
+        max_range = max(x_range, y_range, z_range)
+        padding = max_range * 0.2
+
+        # Create grid that encompasses the curve
+        grid_bounds = [
+            bounds[0] - padding, bounds[1] + padding,
+            bounds[2] - padding, bounds[3] + padding,
+            bounds[4] - padding, bounds[5] + padding
+        ]
+        self.plotter.show_bounds(
+            bounds=grid_bounds,
+            grid='back',
+            location='outer',
+            ticks='both'
+        )
+
         self.plotter.reset_camera()
+
+    def setup_controls(self):
+        """Setup GUI controls using Qt dock widget."""
+        dock = QtWidgets.QDockWidget("Controls", self.plotter)
+        dock.setAllowedAreas(QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea)
+        panel = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(panel)
+
+        # Param A slider (0.1-5.0, scaled as 1-50)
+        layout.addWidget(QtWidgets.QLabel("Param A"))
+        self.slider_a = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.slider_a.setMinimum(1)
+        self.slider_a.setMaximum(50)
+        self.slider_a.setValue(int(self.param_a * 10))
+        self.slider_a.setTickPosition(QtWidgets.QSlider.TicksBelow)
+        self.slider_a.setTickInterval(5)
+        self.slider_a.valueChanged.connect(self._on_param_a)
+        layout.addWidget(self.slider_a)
+
+        # Param B slider (0.1-5.0, scaled as 1-50)
+        layout.addWidget(QtWidgets.QLabel("Param B"))
+        self.slider_b = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.slider_b.setMinimum(1)
+        self.slider_b.setMaximum(50)
+        self.slider_b.setValue(int(self.param_b * 10))
+        self.slider_b.setTickPosition(QtWidgets.QSlider.TicksBelow)
+        self.slider_b.setTickInterval(5)
+        self.slider_b.valueChanged.connect(self._on_param_b)
+        layout.addWidget(self.slider_b)
+
+        # Param C slider (0.1-5.0, scaled as 1-50)
+        layout.addWidget(QtWidgets.QLabel("Param C"))
+        self.slider_c = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.slider_c.setMinimum(1)
+        self.slider_c.setMaximum(50)
+        self.slider_c.setValue(int(self.param_c * 10))
+        self.slider_c.setTickPosition(QtWidgets.QSlider.TicksBelow)
+        self.slider_c.setTickInterval(5)
+        self.slider_c.valueChanged.connect(self._on_param_c)
+        layout.addWidget(self.slider_c)
+
+        # Curve Type slider (0-3)
+        layout.addWidget(QtWidgets.QLabel("Curve Type"))
+        self.slider_curve = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.slider_curve.setMinimum(0)
+        self.slider_curve.setMaximum(len(self.curve_types) - 1)
+        self.slider_curve.setValue(0)
+        self.slider_curve.setTickPosition(QtWidgets.QSlider.TicksBelow)
+        self.slider_curve.valueChanged.connect(self._on_curve_type)
+        layout.addWidget(self.slider_curve)
+
+        # Points slider (200-3000, scaled as 20-300)
+        layout.addWidget(QtWidgets.QLabel("Points"))
+        self.slider_points = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.slider_points.setMinimum(20)
+        self.slider_points.setMaximum(300)
+        self.slider_points.setValue(int(self.n_points / 10))
+        self.slider_points.setTickPosition(QtWidgets.QSlider.TicksBelow)
+        self.slider_points.setTickInterval(10)
+        self.slider_points.valueChanged.connect(self._on_points)
+        layout.addWidget(self.slider_points)
+
+        # Stretch to push controls to top
+        layout.addStretch(1)
+
+        dock.setWidget(panel)
+        self.plotter.app_window.addDockWidget(QtCore.Qt.RightDockWidgetArea, dock)
+
+    def _on_param_a(self, value):
+        """Update parameter A."""
+        self.param_a = value / 10.0
+        self.update_plot()
+
+    def _on_param_b(self, value):
+        """Update parameter B."""
+        self.param_b = value / 10.0
+        self.update_plot()
+
+    def _on_param_c(self, value):
+        """Update parameter C."""
+        self.param_c = value / 10.0
+        self.update_plot()
+
+    def _on_curve_type(self, value):
+        """Update curve type."""
+        idx = int(value)
+        if 0 <= idx < len(self.curve_types):
+            self.curve_type = self.curve_types[idx]
+            self.update_plot()
+
+    def _on_points(self, value):
+        """Update number of points."""
+        self.n_points = max(50, value * 10)
+        self.update_plot()
+
+    def update_plot(self):
+        """Redraw the curve with updated parameters."""
+        x, y, z = self.get_curve_data()
+        points = np.column_stack((x, y, z))
+
+        # Reuse mesh, update in-place
+        self.mesh.points = points
+        self.mesh["t"] = np.linspace(0, 1, len(points))
+        self.mesh.Modified()
+
+        if self.mesh_actor is not None:
+            self.mesh_actor.mapper.SetInputData(self.mesh)
+            self.mesh_actor.mapper.Update()
+
+        # Reset camera to fully encompass the curve
+        self.plotter.reset_camera()
+        self.plotter.render()
 
     def show(self):
         """Display the visualizer."""
         self.plotter.show()
-        self.plotter.app.exec_()
+        self.plotter.app.exec()
 
 
 def main():

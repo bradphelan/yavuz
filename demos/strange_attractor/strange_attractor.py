@@ -9,6 +9,7 @@ from urllib.parse import quote
 
 import numpy as np
 import pyvista as pv
+from PySide6 import QtCore, QtWidgets
 from pyvistaqt import BackgroundPlotter
 
 
@@ -43,8 +44,11 @@ class StrangeAttractorDemo:
         self.trail = deque(maxlen=self.trail_length)
         self._seed_trail()
 
+        self.line_mesh = None
         self.line_actor = None
+        self.head_mesh = None
         self.head_actor = None
+        self._camera_initialized = False
 
         self._setup_controls()
         self._update_hud()
@@ -88,70 +92,100 @@ class StrangeAttractorDemo:
         return next_state
 
     def _setup_controls(self):
-        self.slider_system = self.plotter.add_slider_widget(
-            self._on_system_change,
-            [0, len(self.systems) - 1],
-            value=self.system_index,
-            title="System",
-            pointa=(0.02, 0.1),
-            pointb=(0.28, 0.1),
-        )
-        self.slider_a = self.plotter.add_slider_widget(
-            self._on_param_a,
-            [0.1, 30.0],
-            value=self.defaults["Lorenz"]["a"],
-            title="Param A",
-            pointa=(0.32, 0.1),
-            pointb=(0.58, 0.1),
-        )
-        self.slider_b = self.plotter.add_slider_widget(
-            self._on_param_b,
-            [0.1, 35.0],
-            value=self.defaults["Lorenz"]["b"],
-            title="Param B",
-            pointa=(0.62, 0.1),
-            pointb=(0.88, 0.1),
-        )
-        self.slider_c = self.plotter.add_slider_widget(
-            self._on_param_c,
-            [0.1, 10.0],
-            value=self.defaults["Lorenz"]["c"],
-            title="Param C",
-            pointa=(0.02, 0.06),
-            pointb=(0.28, 0.06),
-        )
-        self.slider_dt = self.plotter.add_slider_widget(
-            self._on_dt,
-            [0.001, 0.03],
-            value=self.dt,
-            title="Time Step",
-            pointa=(0.32, 0.06),
-            pointb=(0.58, 0.06),
-        )
-        self.slider_speed = self.plotter.add_slider_widget(
-            self._on_speed,
-            [1, 60],
-            value=self.steps_per_frame,
-            title="Steps/Frame",
-            pointa=(0.62, 0.06),
-            pointb=(0.88, 0.06),
-        )
-        self.slider_trail = self.plotter.add_slider_widget(
-            self._on_trail,
-            [500, 12000],
-            value=self.trail_length,
-            title="Trail",
-            pointa=(0.02, 0.02),
-            pointb=(0.28, 0.02),
-        )
-        self.plotter.add_checkbox_button_widget(
-            self._toggle_pause,
-            value=self.is_paused,
-            position=(10, 10),
-            size=30,
-        )
-        self.plotter.add_text("Pause", position=(45, 14), font_size=10)
-        self.plotter.add_text("Reset: R", position=(95, 14), font_size=10)
+        dock = QtWidgets.QDockWidget("Controls", self.plotter)
+        dock.setAllowedAreas(QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea)
+        panel = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(panel)
+
+        # System selector (0-1)
+        layout.addWidget(QtWidgets.QLabel("System"))
+        self.slider_system = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.slider_system.setMinimum(0)
+        self.slider_system.setMaximum(len(self.systems) - 1)
+        self.slider_system.setValue(self.system_index)
+        self.slider_system.valueChanged.connect(self._on_system_change)
+        layout.addWidget(self.slider_system)
+
+        # Param A slider (0.1-30.0, scaled as 1-300)
+        layout.addWidget(QtWidgets.QLabel("Param A"))
+        self.slider_a = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.slider_a.setMinimum(1)
+        self.slider_a.setMaximum(300)
+        self.slider_a.setValue(int(self.defaults["Lorenz"]["a"] * 10))
+        self.slider_a.setTickPosition(QtWidgets.QSlider.TicksBelow)
+        self.slider_a.setTickInterval(20)
+        self.slider_a.valueChanged.connect(self._on_param_a)
+        layout.addWidget(self.slider_a)
+
+        # Param B slider (0.1-35.0, scaled as 1-350)
+        layout.addWidget(QtWidgets.QLabel("Param B"))
+        self.slider_b = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.slider_b.setMinimum(1)
+        self.slider_b.setMaximum(350)
+        self.slider_b.setValue(int(self.defaults["Lorenz"]["b"] * 10))
+        self.slider_b.setTickPosition(QtWidgets.QSlider.TicksBelow)
+        self.slider_b.setTickInterval(20)
+        self.slider_b.valueChanged.connect(self._on_param_b)
+        layout.addWidget(self.slider_b)
+
+        # Param C slider (0.1-10.0, scaled as 1-100)
+        layout.addWidget(QtWidgets.QLabel("Param C"))
+        self.slider_c = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.slider_c.setMinimum(1)
+        self.slider_c.setMaximum(100)
+        self.slider_c.setValue(int(self.defaults["Lorenz"]["c"] * 10))
+        self.slider_c.setTickPosition(QtWidgets.QSlider.TicksBelow)
+        self.slider_c.setTickInterval(5)
+        self.slider_c.valueChanged.connect(self._on_param_c)
+        layout.addWidget(self.slider_c)
+
+        # Time Step slider (0.001-0.03, scaled as 1-30)
+        layout.addWidget(QtWidgets.QLabel("Time Step"))
+        self.slider_dt = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.slider_dt.setMinimum(1)
+        self.slider_dt.setMaximum(30)
+        self.slider_dt.setValue(int(self.dt * 1000))
+        self.slider_dt.setTickPosition(QtWidgets.QSlider.TicksBelow)
+        self.slider_dt.setTickInterval(2)
+        self.slider_dt.valueChanged.connect(self._on_dt)
+        layout.addWidget(self.slider_dt)
+
+        # Steps/Frame slider (1-60)
+        layout.addWidget(QtWidgets.QLabel("Steps/Frame"))
+        self.slider_speed = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.slider_speed.setMinimum(1)
+        self.slider_speed.setMaximum(60)
+        self.slider_speed.setValue(self.steps_per_frame)
+        self.slider_speed.setTickPosition(QtWidgets.QSlider.TicksBelow)
+        self.slider_speed.setTickInterval(5)
+        self.slider_speed.valueChanged.connect(self._on_speed)
+        layout.addWidget(self.slider_speed)
+
+        # Trail Length slider (500-12000, scaled as 50-1200)
+        layout.addWidget(QtWidgets.QLabel("Trail Length"))
+        self.slider_trail = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.slider_trail.setMinimum(50)
+        self.slider_trail.setMaximum(1200)
+        self.slider_trail.setValue(int(self.trail_length / 10))
+        self.slider_trail.setTickPosition(QtWidgets.QSlider.TicksBelow)
+        self.slider_trail.setTickInterval(50)
+        self.slider_trail.valueChanged.connect(self._on_trail)
+        layout.addWidget(self.slider_trail)
+
+        # Pause checkbox
+        self.pause_checkbox = QtWidgets.QCheckBox("Pause")
+        self.pause_checkbox.setChecked(self.is_paused)
+        self.pause_checkbox.stateChanged.connect(self._toggle_pause)
+        layout.addWidget(self.pause_checkbox)
+
+        # Stretch to push controls to top
+        layout.addStretch(1)
+
+        dock.setWidget(panel)
+        self.plotter.app_window.addDockWidget(QtCore.Qt.RightDockWidgetArea, dock)
+
+        # Add key event for reset
+        self.plotter.add_text("Reset: R", position=(10, 14), font_size=10)
         self.plotter.add_key_event("r", self._reset)
 
     def _update_scene(self):
@@ -159,25 +193,43 @@ class StrangeAttractorDemo:
         if len(data) < 2:
             return
 
-        if self.line_actor:
-            self.plotter.remove_actor(self.line_actor)
-            self.line_actor = None
-        if self.head_actor:
-            self.plotter.remove_actor(self.head_actor)
-            self.head_actor = None
+        if self.line_mesh is None:
+            # First time: create the mesh and actor
+            self.line_mesh = pv.lines_from_points(data)
+            self.line_actor = self.plotter.add_mesh(self.line_mesh, color="#1f77b4", line_width=2)
+        else:
+            # Update line mesh: rebuild connectivity for new points
+            new_line_mesh = pv.lines_from_points(data)
+            self.line_mesh.copy_from(new_line_mesh)
+            self.line_mesh.Modified()
 
-        line = pv.lines_from_points(data)
-        self.line_actor = self.plotter.add_mesh(line, color="#1f77b4", line_width=2)
+            if self.line_actor is not None:
+                self.line_actor.mapper.SetInputData(self.line_mesh)
+                self.line_actor.mapper.Update()
 
-        head = pv.PolyData(data[-1:])
-        self.head_actor = self.plotter.add_mesh(
-            head,
-            color="#ff7f0e",
-            point_size=10,
-            render_points_as_spheres=True,
-        )
+        if self.head_mesh is None:
+            # First time: create head mesh and actor
+            head_point = data[-1:]
+            self.head_mesh = pv.PolyData(head_point)
+            self.head_actor = self.plotter.add_mesh(
+                self.head_mesh,
+                color="#ff7f0e",
+                point_size=10,
+                render_points_as_spheres=True,
+            )
+        else:
+            # Subsequent frames: update head position
+            head_point = data[-1:]
+            self.head_mesh.points = head_point
+            self.head_mesh.Modified()
 
-        self.plotter.reset_camera()
+            if self.head_actor is not None:
+                self.head_actor.mapper.SetInputData(self.head_mesh)
+                self.head_actor.mapper.Update()
+
+        if not self._camera_initialized:
+            self.plotter.reset_camera()
+            self._camera_initialized = True
 
     def _update_hud(self):
         system = self.systems[self.system_index]
@@ -190,31 +242,31 @@ class StrangeAttractorDemo:
         self.plotter.add_text(text, position="upper_left", font_size=10, name="hud")
 
     def _on_system_change(self, value):
-        self.system_index = int(round(value))
+        self.system_index = int(value)
         self._apply_defaults()
 
     def _on_param_a(self, value):
         system = self.systems[self.system_index]
-        self.params[system]["a"] = float(value)
+        self.params[system]["a"] = value / 10.0
 
     def _on_param_b(self, value):
         system = self.systems[self.system_index]
-        self.params[system]["b"] = float(value)
+        self.params[system]["b"] = value / 10.0
 
     def _on_param_c(self, value):
         system = self.systems[self.system_index]
-        self.params[system]["c"] = float(value)
+        self.params[system]["c"] = value / 10.0
 
     def _on_dt(self, value):
-        self.dt = float(value)
+        self.dt = value / 1000.0
         self._update_hud()
 
     def _on_speed(self, value):
-        self.steps_per_frame = int(round(value))
+        self.steps_per_frame = int(value)
         self._update_hud()
 
     def _on_trail(self, value):
-        self.trail_length = int(round(value))
+        self.trail_length = value * 10
         self.trail = deque(self.trail, maxlen=self.trail_length)
         self._update_hud()
 
@@ -225,9 +277,9 @@ class StrangeAttractorDemo:
         system = self.systems[self.system_index]
         defaults = self.defaults[system]
         self.params[system] = dict(defaults)
-        self._set_slider_value(self.slider_a, defaults["a"])
-        self._set_slider_value(self.slider_b, defaults["b"])
-        self._set_slider_value(self.slider_c, defaults["c"])
+        self.slider_a.setValue(int(defaults["a"] * 10))
+        self.slider_b.setValue(int(defaults["b"] * 10))
+        self.slider_c.setValue(int(defaults["c"] * 10))
         self._reset_state()
 
     def _reset_state(self):
@@ -235,16 +287,12 @@ class StrangeAttractorDemo:
         self.dt = 0.01
         self.steps_per_frame = 10
         self.trail_length = 5000
-        self._set_slider_value(self.slider_dt, self.dt)
-        self._set_slider_value(self.slider_speed, self.steps_per_frame)
-        self._set_slider_value(self.slider_trail, self.trail_length)
+        self.slider_dt.setValue(int(self.dt * 1000))
+        self.slider_speed.setValue(self.steps_per_frame)
+        self.slider_trail.setValue(int(self.trail_length / 10))
         self._seed_trail()
         self._update_hud()
         self._update_scene()
-
-    @staticmethod
-    def _set_slider_value(slider, value):
-        slider.GetRepresentation().SetValue(value)
 
     def _reset(self):
         self._apply_defaults()
@@ -263,7 +311,7 @@ class StrangeAttractorDemo:
 
     def show(self):
         self.plotter.show()
-        self.plotter.app.exec_()
+        self.plotter.app.exec()
 
 
 def main():
