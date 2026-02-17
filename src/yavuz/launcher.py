@@ -8,6 +8,7 @@ from tkinter import ttk, scrolledtext
 import subprocess
 import sys
 import threading
+import traceback
 import webbrowser
 from importlib import util as importlib_util
 from pathlib import Path
@@ -267,11 +268,119 @@ class DemoLauncher:
             self.status_var.set(f"Launching: {demo['name']}...")
 
             try:
-                # Run the demo in a new process
-                subprocess.Popen([sys.executable, str(demo["path"])])
-                self.status_var.set(f"✓ Launched: {demo['name']}")
+                self._launch_demo_process(demo)
             except Exception as e:
                 self.status_var.set(f"✗ Error launching demo: {str(e)}")
+
+    def _launch_demo_process(self, demo):
+        """Run the demo in a subprocess and capture crashes."""
+        def _run():
+            try:
+                process = subprocess.Popen(
+                    [sys.executable, str(demo["path"])],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
+                stdout, stderr = process.communicate()
+                self.root.after(
+                    0,
+                    self._handle_demo_result,
+                    demo,
+                    process.returncode,
+                    stdout,
+                    stderr
+                )
+            except Exception:
+                error_text = traceback.format_exc()
+                self.root.after(
+                    0,
+                    self._handle_demo_result,
+                    demo,
+                    1,
+                    "",
+                    error_text
+                )
+
+        threading.Thread(target=_run, daemon=True).start()
+        self.status_var.set(f"✓ Launched: {demo['name']}")
+
+    def _handle_demo_result(self, demo, return_code, stdout, stderr):
+        """Show crash modal when a demo exits with errors."""
+        error_hint = "Traceback" in (stderr or "")
+        if return_code == 0 and not error_hint:
+            return
+
+        report = self._build_crash_report(demo, return_code, stdout, stderr)
+        self._show_crash_modal(demo["name"], report)
+
+    def _build_crash_report(self, demo, return_code, stdout, stderr):
+        """Build a structured report for AI assistance."""
+        return (
+            "Demo Crash Report\n"
+            f"Demo Name: {demo['name']}\n"
+            f"Demo Id: {demo['id']}\n"
+            f"Demo Path: {demo['path']}\n"
+            f"Python: {sys.version.replace(chr(10), ' ')}\n"
+            f"Platform: {sys.platform}\n"
+            f"Exit Code: {return_code}\n"
+            "\n"
+            "--- STDERR ---\n"
+            f"{stderr.strip()}\n"
+            "\n"
+            "--- STDOUT ---\n"
+            f"{stdout.strip()}\n"
+        )
+
+    def _show_crash_modal(self, demo_name, report):
+        """Show a modal dialog with crash details and copy helper."""
+        modal = tk.Toplevel(self.root)
+        modal.title("Demo crashed")
+        modal.geometry("700x500")
+        modal.transient(self.root)
+        modal.grab_set()
+
+        header = ttk.Label(
+            modal,
+            text=(
+                f"{demo_name} stopped unexpectedly. "
+                "Copy the report and paste it into the chat to get AI help."
+            ),
+            wraplength=660,
+            justify=tk.LEFT
+        )
+        header.pack(padx=12, pady=(12, 8), anchor=tk.W)
+
+        report_box = scrolledtext.ScrolledText(
+            modal,
+            wrap=tk.WORD,
+            height=18,
+            font=("Consolas", 10)
+        )
+        report_box.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 12))
+        report_box.insert(tk.END, report)
+        report_box.config(state=tk.DISABLED)
+
+        button_frame = ttk.Frame(modal)
+        button_frame.pack(pady=(0, 12))
+
+        ttk.Button(
+            button_frame,
+            text="Copy Report",
+            command=lambda: self._copy_to_clipboard(report)
+        ).grid(row=0, column=0, padx=6)
+
+        ttk.Button(
+            button_frame,
+            text="Close",
+            command=modal.destroy
+        ).grid(row=0, column=1, padx=6)
+
+    def _copy_to_clipboard(self, text):
+        """Copy crash report to clipboard with demo metadata."""
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        self.root.update()
 
     def open_selected_source(self):
         """Open the selected demo source in VS Code."""
