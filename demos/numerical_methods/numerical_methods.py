@@ -1,57 +1,52 @@
 """
 Numerical methods demonstration with interactive controls.
-Demonstrates various numerical algorithms like integration, differentiation, and root finding.
+Demonstrates integration and differentiation visuals.
 """
 
-import numpy as np
-import matplotlib.pyplot as plt
 from pathlib import Path
 from urllib.parse import quote
-from matplotlib.widgets import Slider, RadioButtons, Button, TextBox
+
+import numpy as np
+import pyvista as pv
+from pyvistaqt import BackgroundPlotter
 
 
 class NumericalMethodsDemo:
     def __init__(self):
-        self.fig, (self.ax1, self.ax2) = plt.subplots(1, 2, figsize=(14, 6))
-        self.fig.subplots_adjust(bottom=0.35)
+        self.plotter = BackgroundPlotter(
+            window_size=(1400, 700),
+            title="Numerical Methods Demonstration",
+            shape=(1, 2),
+        )
+        self.plotter.set_background("white")
 
-        # Parameters
         self.n_points = 100
-        self.n_iterations = 10
-        self.method = 'Trapezoidal'
+        self.method_options = ["Trapezoidal", "Simpson", "Derivative"]
+        self.method_index = 0
 
-        # Function parameters
         self.freq = 1.0
         self.amp = 1.0
 
-        self.setup_controls()
+        self._setup_controls()
         self.update_plot()
 
     def test_function(self, x):
-        """Test function to integrate/differentiate."""
         return self.amp * np.sin(self.freq * x) + 0.5 * np.cos(2 * self.freq * x)
 
     def test_function_derivative(self, x):
-        """Analytical derivative for comparison."""
-        return self.amp * self.freq * np.cos(self.freq * x) - \
-               self.freq * np.sin(2 * self.freq * x)
+        return self.amp * self.freq * np.cos(self.freq * x) - self.freq * np.sin(2 * self.freq * x)
 
     def test_function_integral(self, x):
-        """Analytical integral for comparison."""
-        return -self.amp / self.freq * np.cos(self.freq * x) + \
-               1 / (4 * self.freq) * np.sin(2 * self.freq * x)
+        return -self.amp / self.freq * np.cos(self.freq * x) + 1 / (4 * self.freq) * np.sin(2 * self.freq * x)
 
     def trapezoidal_integration(self, x, y):
-        """Trapezoidal rule for numerical integration."""
         dx = x[1] - x[0]
         integral = np.cumsum(y) * dx
-        # Correct using trapezoidal rule
         integral[1:] = integral[1:] - dx * y[1:] / 2
         integral[0] = 0
         return integral
 
     def simpson_integration(self, x, y):
-        """Simpson's rule for numerical integration."""
         n = len(x) - 1
         if n % 2 == 1:
             n -= 1
@@ -59,144 +54,133 @@ class NumericalMethodsDemo:
         dx = x[1] - x[0]
         integral = np.zeros_like(y)
 
-        for i in range(1, n+1):
+        for i in range(1, n + 1):
             if i % 2 == 0:
-                # Even index - use Simpson's rule
-                integral[i] = integral[i-2] + dx/3 * (y[i-2] + 4*y[i-1] + y[i])
+                integral[i] = integral[i - 2] + dx / 3 * (y[i - 2] + 4 * y[i - 1] + y[i])
             else:
-                # Odd index - interpolate
-                integral[i] = integral[i-1] + dx * (y[i-1] + y[i]) / 2
+                integral[i] = integral[i - 1] + dx * (y[i - 1] + y[i]) / 2
 
         return integral
 
     def numerical_derivative(self, x, y):
-        """Numerical derivative using central differences."""
         dy = np.zeros_like(y)
         dx = x[1] - x[0]
-
-        # Central difference for interior points
         dy[1:-1] = (y[2:] - y[:-2]) / (2 * dx)
-
-        # Forward difference for first point
         dy[0] = (y[1] - y[0]) / dx
-
-        # Backward difference for last point
         dy[-1] = (y[-1] - y[-2]) / dx
-
         return dy
 
-    def setup_controls(self):
-        """Setup GUI controls."""
-        # Frequency slider
-        ax_freq = plt.axes([0.2, 0.25, 0.6, 0.03])
-        self.slider_freq = Slider(ax_freq, 'Frequency', 0.1, 5.0, valinit=self.freq, valstep=0.1)
-        self.slider_freq.on_changed(self.update_freq)
-
-        # Amplitude slider
-        ax_amp = plt.axes([0.2, 0.20, 0.6, 0.03])
-        self.slider_amp = Slider(ax_amp, 'Amplitude', 0.1, 3.0, valinit=self.amp, valstep=0.1)
-        self.slider_amp.on_changed(self.update_amp)
-
-        # Points slider
-        ax_points = plt.axes([0.2, 0.15, 0.6, 0.03])
-        self.slider_points = Slider(
-            ax_points, 'Points', 10, 500,
-            valinit=self.n_points, valstep=10
+    def _setup_controls(self):
+        self.plotter.add_slider_widget(
+            self._on_freq_change,
+            [0.1, 5.0],
+            value=self.freq,
+            title="Frequency",
+            pointa=(0.02, 0.06),
+            pointb=(0.32, 0.06),
         )
-        self.slider_points.on_changed(self.update_points)
-
-        # Method selector
-        ax_method = plt.axes([0.025, 0.4, 0.15, 0.15])
-        self.radio = RadioButtons(
-            ax_method,
-            ('Trapezoidal', 'Simpson', 'Derivative')
+        self.plotter.add_slider_widget(
+            self._on_amp_change,
+            [0.1, 3.0],
+            value=self.amp,
+            title="Amplitude",
+            pointa=(0.35, 0.06),
+            pointb=(0.65, 0.06),
         )
-        self.radio.on_clicked(self.update_method)
+        self.plotter.add_slider_widget(
+            self._on_points_change,
+            [10, 500],
+            value=self.n_points,
+            title="Points",
+            pointa=(0.68, 0.06),
+            pointb=(0.98, 0.06),
+        )
+        self.plotter.add_slider_widget(
+            self._on_method_change,
+            [0, len(self.method_options) - 1],
+            value=self.method_index,
+            title="Method",
+            pointa=(0.02, 0.1),
+            pointb=(0.32, 0.1),
+        )
 
-    def update_freq(self, val):
-        """Update frequency."""
-        self.freq = val
+    def _on_freq_change(self, val):
+        self.freq = float(val)
         self.update_plot()
 
-    def update_amp(self, val):
-        """Update amplitude."""
-        self.amp = val
+    def _on_amp_change(self, val):
+        self.amp = float(val)
         self.update_plot()
 
-    def update_points(self, val):
-        """Update number of points."""
-        self.n_points = int(val)
+    def _on_points_change(self, val):
+        self.n_points = int(round(val))
         self.update_plot()
 
-    def update_method(self, label):
-        """Update numerical method."""
-        self.method = label
+    def _on_method_change(self, val):
+        self.method_index = int(round(val))
         self.update_plot()
+
+    def _clear_subplot(self, row, col):
+        self.plotter.subplot(row, col)
+        self.plotter.clear()
+        self.plotter.set_background("white")
+        self.plotter.show_grid()
 
     def update_plot(self):
-        """Redraw plots with current parameters."""
-        # Generate data
-        x = np.linspace(0, 4*np.pi, self.n_points)
+        self._clear_subplot(0, 0)
+        self._clear_subplot(0, 1)
+
+        x = np.linspace(0, 4 * np.pi, self.n_points)
         y = self.test_function(x)
 
-        # Clear axes
-        self.ax1.clear()
-        self.ax2.clear()
-
-        # Plot original function
-        x_fine = np.linspace(0, 4*np.pi, 500)
+        x_fine = np.linspace(0, 4 * np.pi, 500)
         y_fine = self.test_function(x_fine)
-        self.ax1.plot(x_fine, y_fine, 'b-', label='Function', linewidth=2)
-        self.ax1.plot(x, y, 'ro', markersize=3, label='Sample Points')
-        self.ax1.set_xlabel('x')
-        self.ax1.set_ylabel('f(x)')
-        self.ax1.set_title('Original Function')
-        self.ax1.legend()
-        self.ax1.grid(True, alpha=0.3)
 
-        # Compute and plot numerical result
-        if self.method == 'Trapezoidal':
+        points_fine = np.column_stack([x_fine, y_fine, np.zeros_like(x_fine)])
+        points_samples = np.column_stack([x, y, np.zeros_like(x)])
+        line_fine = pv.lines_from_points(points_fine)
+        points_poly = pv.PolyData(points_samples)
+
+        self.plotter.subplot(0, 0)
+        self.plotter.add_text("Original Function", position="upper_left", font_size=12)
+        self.plotter.add_mesh(line_fine, color="blue", line_width=3)
+        self.plotter.add_mesh(points_poly, color="red", point_size=6, render_points_as_spheres=True)
+
+        method = self.method_options[self.method_index]
+        self.plotter.subplot(0, 1)
+
+        if method == "Trapezoidal":
             numerical = self.trapezoidal_integration(x, y)
             analytical = self.test_function_integral(x)
-            analytical -= analytical[0]  # Normalize to start at 0
-            self.ax2.plot(x, numerical, 'r-', label='Numerical (Trapezoidal)', linewidth=2)
-            self.ax2.plot(x_fine, self.test_function_integral(x_fine) - self.test_function_integral(0),
-                         'b--', label='Analytical', linewidth=2, alpha=0.7)
-            self.ax2.set_title('Numerical Integration')
-            self.ax2.set_ylabel('∫f(x)dx')
-
-        elif self.method == 'Simpson':
+            analytical -= analytical[0]
+            title = "Numerical Integration (Trapezoidal)"
+        elif method == "Simpson":
             numerical = self.simpson_integration(x, y)
             analytical = self.test_function_integral(x)
             analytical -= analytical[0]
-            self.ax2.plot(x, numerical, 'r-', label='Numerical (Simpson)', linewidth=2)
-            self.ax2.plot(x_fine, self.test_function_integral(x_fine) - self.test_function_integral(0),
-                         'b--', label='Analytical', linewidth=2, alpha=0.7)
-            self.ax2.set_title('Numerical Integration')
-            self.ax2.set_ylabel('∫f(x)dx')
-
-        elif self.method == 'Derivative':
+            title = "Numerical Integration (Simpson)"
+        else:
             numerical = self.numerical_derivative(x, y)
             analytical = self.test_function_derivative(x)
-            self.ax2.plot(x, numerical, 'r-', label='Numerical', linewidth=2)
-            self.ax2.plot(x_fine, self.test_function_derivative(x_fine),
-                         'b--', label='Analytical', linewidth=2, alpha=0.7)
-            self.ax2.set_title('Numerical Differentiation')
-            self.ax2.set_ylabel("f'(x)")
+            title = "Numerical Differentiation"
 
-        self.ax2.set_xlabel('x')
-        self.ax2.legend()
-        self.ax2.grid(True, alpha=0.3)
+        numerical_points = np.column_stack([x, numerical, np.zeros_like(x)])
+        analytical_points = np.column_stack([x_fine, analytical, np.zeros_like(x_fine)])
+        numerical_line = pv.lines_from_points(numerical_points)
+        analytical_line = pv.lines_from_points(analytical_points)
 
-        self.fig.canvas.draw_idle()
+        self.plotter.add_text(title, position="upper_left", font_size=12)
+        self.plotter.add_mesh(numerical_line, color="red", line_width=3)
+        self.plotter.add_mesh(analytical_line, color="blue", line_width=2, opacity=0.6)
+
+        self.plotter.reset_camera()
 
     def show(self):
-        """Display the demo."""
-        plt.show()
+        self.plotter.show()
+        self.plotter.app.exec_()
 
 
 def main():
-    """Run the numerical methods demo."""
     demo = NumericalMethodsDemo()
     demo.show()
 
@@ -209,17 +193,21 @@ def _build_vscode_url(path):
 
 
 def get_manifest():
-    return {
-        "title": "Numerical Methods Demonstration",
-        "description": "Compare numerical algorithms with analytical solutions.\n\n"
-                       "Features:\n"
-                       "- Numerical integration (Trapezoidal and Simpson)\n"
-                       "- Numerical differentiation\n"
-                       "- Side-by-side comparison with exact solutions\n"
-                       "- Adjustable sample points\n"
-                       "- Interactive function parameters",
-        "source_url": _build_vscode_url(__file__),
-    }
+    manifest = dict(DEMO_MANIFEST)
+    manifest["source_url"] = _build_vscode_url(__file__)
+    return manifest
+
+
+DEMO_MANIFEST = {
+    "title": "Numerical Methods Demonstration",
+    "description": "Compare numerical algorithms with analytical solutions.\n\n"
+    "Features:\n"
+    "- Numerical integration (Trapezoidal and Simpson)\n"
+    "- Numerical differentiation\n"
+    "- Side-by-side comparison with exact solutions\n"
+    "- Adjustable sample points\n"
+    "- Interactive function parameters",
+}
 
 
 if __name__ == "__main__":

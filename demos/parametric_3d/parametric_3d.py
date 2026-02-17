@@ -3,29 +3,34 @@ Parametric 3D curves with interactive parameter controls.
 Demonstrates various 3D mathematical curves with adjustable parameters.
 """
 
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.widgets import Slider, RadioButtons, TextBox
 from pathlib import Path
 from urllib.parse import quote
-from mpl_toolkits.mplot3d import Axes3D
+
+import numpy as np
+import pyvista as pv
+from pyvistaqt import BackgroundPlotter
 
 
 class Parametric3DVisualizer:
     def __init__(self):
-        self.fig = plt.figure(figsize=(12, 8))
-        self.ax = self.fig.add_subplot(111, projection='3d')
-        self.fig.subplots_adjust(left=0.25, bottom=0.25)
+        self.plotter = BackgroundPlotter(
+            window_size=(1200, 800),
+            title="Parametric 3D Curves",
+        )
+        self.plotter.set_background("white")
+        self.plotter.add_axes()
+        self.plotter.show_grid()
 
         # Parameters
         self.param_a = 1.0
         self.param_b = 1.0
         self.param_c = 1.0
         self.n_points = 1000
-        self.curve_type = 'Helix'
+        self.curve_types = ["Helix", "Torus Knot", "Lissajous", "Spiral"]
+        self.curve_type = self.curve_types[0]
 
         # Initial plot
-        self.line = None
+        self.actor = None
         self.update_plot()
 
         # Setup controls
@@ -81,33 +86,46 @@ class Parametric3DVisualizer:
 
     def setup_controls(self):
         """Setup GUI controls."""
-        # Parameter A slider
-        ax_a = plt.axes([0.25, 0.15, 0.5, 0.03])
-        self.slider_a = Slider(ax_a, 'Param A', 0.1, 5.0, valinit=self.param_a, valstep=0.1)
-        self.slider_a.on_changed(self.update_param_a)
-
-        # Parameter B slider
-        ax_b = plt.axes([0.25, 0.10, 0.5, 0.03])
-        self.slider_b = Slider(ax_b, 'Param B', 0.1, 5.0, valinit=self.param_b, valstep=0.1)
-        self.slider_b.on_changed(self.update_param_b)
-
-        # Parameter C slider
-        ax_c = plt.axes([0.25, 0.05, 0.5, 0.03])
-        self.slider_c = Slider(ax_c, 'Param C', 0.1, 5.0, valinit=self.param_c, valstep=0.1)
-        self.slider_c.on_changed(self.update_param_c)
-
-        # Curve type selector
-        ax_type = plt.axes([0.025, 0.3, 0.15, 0.2])
-        self.radio = RadioButtons(
-            ax_type,
-            ('Helix', 'Torus Knot', 'Lissajous', 'Spiral')
+        self.plotter.add_slider_widget(
+            self.update_param_a,
+            [0.1, 5.0],
+            value=self.param_a,
+            title="Param A",
+            pointa=(0.02, 0.1),
+            pointb=(0.3, 0.1),
         )
-        self.radio.on_clicked(self.update_curve_type)
-
-        # Points input box
-        ax_points = plt.axes([0.1, 0.02, 0.1, 0.04])
-        self.textbox = TextBox(ax_points, 'Points:', initial=str(self.n_points))
-        self.textbox.on_submit(self.update_points)
+        self.plotter.add_slider_widget(
+            self.update_param_b,
+            [0.1, 5.0],
+            value=self.param_b,
+            title="Param B",
+            pointa=(0.35, 0.1),
+            pointb=(0.63, 0.1),
+        )
+        self.plotter.add_slider_widget(
+            self.update_param_c,
+            [0.1, 5.0],
+            value=self.param_c,
+            title="Param C",
+            pointa=(0.68, 0.1),
+            pointb=(0.96, 0.1),
+        )
+        self.plotter.add_slider_widget(
+            self.update_curve_type,
+            [0, len(self.curve_types) - 1],
+            value=0,
+            title="Curve Type",
+            pointa=(0.02, 0.04),
+            pointb=(0.48, 0.04),
+        )
+        self.plotter.add_slider_widget(
+            self.update_points,
+            [200, 3000],
+            value=self.n_points,
+            title="Points",
+            pointa=(0.55, 0.04),
+            pointb=(0.96, 0.04),
+        )
 
     def update_param_a(self, val):
         """Update parameter A."""
@@ -126,47 +144,39 @@ class Parametric3DVisualizer:
 
     def update_curve_type(self, label):
         """Update curve type."""
-        self.curve_type = label
+        idx = int(round(label))
+        idx = max(0, min(idx, len(self.curve_types) - 1))
+        self.curve_type = self.curve_types[idx]
         self.update_plot()
 
     def update_points(self, text):
         """Update number of points."""
-        try:
-            self.n_points = int(text)
-            self.update_plot()
-        except ValueError:
-            pass
+        self.n_points = max(50, int(round(text)))
+        self.update_plot()
 
     def update_plot(self):
         """Redraw the curve with updated parameters."""
-        self.ax.clear()
+        if self.actor:
+            self.plotter.remove_actor(self.actor)
 
         x, y, z = self.get_curve_data()
+        points = np.column_stack((x, y, z))
+        poly = pv.lines_from_points(points)
+        poly["t"] = np.linspace(0, 1, len(points))
 
-        # Create color gradient based on parameter
-        colors = np.linspace(0, 1, len(x))
+        self.actor = self.plotter.add_mesh(
+            poly,
+            scalars="t",
+            cmap="viridis",
+            line_width=3,
+        )
 
-        self.line = self.ax.scatter(x, y, z, c=colors, cmap='viridis', s=1)
-
-        self.ax.set_xlabel('X')
-        self.ax.set_ylabel('Y')
-        self.ax.set_zlabel('Z')
-        self.ax.set_title(f'3D Parametric Curve: {self.curve_type}')
-
-        # Set equal aspect ratio
-        max_range = max(np.ptp(x), np.ptp(y), np.ptp(z)) / 2
-        mid_x = (np.max(x) + np.min(x)) / 2
-        mid_y = (np.max(y) + np.min(y)) / 2
-        mid_z = (np.max(z) + np.min(z)) / 2
-        self.ax.set_xlim(mid_x - max_range, mid_x + max_range)
-        self.ax.set_ylim(mid_y - max_range, mid_y + max_range)
-        self.ax.set_zlim(mid_z - max_range, mid_z + max_range)
-
-        self.fig.canvas.draw_idle()
+        self.plotter.reset_camera()
 
     def show(self):
         """Display the visualizer."""
-        plt.show()
+        self.plotter.show()
+        self.plotter.app.exec_()
 
 
 def main():
@@ -183,17 +193,21 @@ def _build_vscode_url(path):
 
 
 def get_manifest():
-    return {
-        "title": "Parametric 3D Curves",
-        "description": "Explore 3D mathematical curves with interactive parameters.\n\n"
-                       "Features:\n"
-                       "- Curve types: Helix, Torus Knot, Lissajous, Spiral\n"
-                       "- Three adjustable parameters per curve\n"
-                       "- Color gradients based on position\n"
-                       "- Configurable point density\n"
-                       "- Interactive 3D rotation",
-        "source_url": _build_vscode_url(__file__),
-    }
+    manifest = dict(DEMO_MANIFEST)
+    manifest["source_url"] = _build_vscode_url(__file__)
+    return manifest
+
+
+DEMO_MANIFEST = {
+    "title": "Parametric 3D Curves",
+    "description": "Explore 3D mathematical curves with interactive parameters.\n\n"
+    "Features:\n"
+    "- Curve types: Helix, Torus Knot, Lissajous, Spiral\n"
+    "- Three adjustable parameters per curve\n"
+    "- Color gradients based on position\n"
+    "- Configurable point density\n"
+    "- Interactive 3D rotation",
+}
 
 
 if __name__ == "__main__":

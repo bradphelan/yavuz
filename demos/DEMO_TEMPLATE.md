@@ -16,14 +16,19 @@ This template shows how to create a new demo for the Yavuz project.
    Brief description of what this demo does.
    """
 
-   import numpy as np
-   import matplotlib.pyplot as plt
-   from matplotlib.widgets import Slider, Button
+    import numpy as np
+    import pyvista as pv
+    from pyvistaqt import BackgroundPlotter
 
 
    class MyNewDemo:
        def __init__(self):
-           self.fig, self.ax = plt.subplots(figsize=(10, 8))
+           self.plotter = BackgroundPlotter(
+               window_size=(1000, 800),
+               title="My New Demo",
+           )
+           self.plotter.set_background("white")
+           self.plotter.add_axes()
            # Setup your visualization
 
        def setup_controls(self):
@@ -38,7 +43,8 @@ This template shows how to create a new demo for the Yavuz project.
 
        def show(self):
            """Display the demo."""
-           plt.show()
+           self.plotter.show()
+           self.plotter.app.exec_()
 
 
    def main():
@@ -107,29 +113,40 @@ This template shows how to create a new demo for the Yavuz project.
 
 ## Common GUI Widgets
 
-### Matplotlib Widgets
+### PyVista Widgets
 ```python
-from matplotlib.widgets import Slider, Button, RadioButtons, TextBox, CheckButtons
+import numpy as np
+import pyvista as pv
+from pyvistaqt import BackgroundPlotter
+
+plotter = BackgroundPlotter(window_size=(1000, 800), title="Example")
+plotter.set_background("white")
+plotter.add_axes()
 
 # Slider
-ax_slider = plt.axes([0.2, 0.1, 0.6, 0.03])
-slider = Slider(ax_slider, 'Label', min_val, max_val, valinit=initial)
-slider.on_changed(callback_function)
+plotter.add_slider_widget(
+    callback_function,
+    [min_val, max_val],
+    value=initial,
+    title="Label",
+    pointa=(0.1, 0.1),
+    pointb=(0.4, 0.1),
+)
 
-# Button
-ax_button = plt.axes([0.4, 0.05, 0.2, 0.04])
-button = Button(ax_button, 'Click Me')
-button.on_clicked(callback_function)
+# Checkbox button
+plotter.add_checkbox_button_widget(
+    callback_function,
+    value=True,
+    position=(10, 10),
+    size=30,
+)
 
-# Radio Buttons
-ax_radio = plt.axes([0.05, 0.5, 0.15, 0.15])
-radio = RadioButtons(ax_radio, ('Option 1', 'Option 2', 'Option 3'))
-radio.on_clicked(callback_function)
+# Text label
+plotter.add_text("Example", position="upper_left", font_size=12)
 
-# Text Box
-ax_text = plt.axes([0.3, 0.05, 0.2, 0.04])
-textbox = TextBox(ax_text, 'Label:', initial='value')
-textbox.on_submit(callback_function)
+# 3D mesh
+mesh = pv.Sphere()
+plotter.add_mesh(mesh, color="skyblue", smooth_shading=True)
 ```
 
 ## Example Callback Functions
@@ -140,14 +157,9 @@ def update_parameter(self, val):
     self.parameter = val
     self.update_plot()
 
-def on_button_click(self, event):
-    """Handle button click."""
-    # Your action here
-    self.update_plot()
-
-def on_radio_select(self, label):
-    """Handle radio button selection."""
-    self.selected_option = label
+def on_toggle(self, state):
+    """Handle checkbox toggle."""
+    self.enabled = bool(state)
     self.update_plot()
 ```
 
@@ -162,6 +174,6 @@ def on_radio_select(self, label):
 
 ## Resources
 
-- [Matplotlib Gallery](https://matplotlib.org/stable/gallery/index.html)
-- [Matplotlib Widgets](https://matplotlib.org/stable/gallery/widgets/index.html)
+- [PyVista Documentation](https://docs.pyvista.org/)
+- [PyVistaQt Widgets](https://github.com/pyvista/pyvistaqt)
 - [NumPy Documentation](https://numpy.org/doc/)

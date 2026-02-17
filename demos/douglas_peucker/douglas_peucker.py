@@ -1,19 +1,26 @@
 """
 Douglas-Peucker Algorithm Visualization
-Demonstrates line simplification with noise reduction using the Ramer-Douglas-Peucker algorithm.
+Demonstrates line simplification with noise reduction using the RDP algorithm.
 """
 
 from pathlib import Path
 from urllib.parse import quote
+
 import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.widgets import Slider, Button
+import pyvista as pv
+from PySide6 import QtCore, QtWidgets
+from pyvistaqt import BackgroundPlotter
 
 
 class DouglasPeuckerDemo:
     def __init__(self):
-        self.fig, (self.ax1, self.ax2) = plt.subplots(2, 1, figsize=(12, 10))
-        self.fig.subplots_adjust(bottom=0.25, hspace=0.3)
+        self.plotter = BackgroundPlotter(
+            window_size=(1200, 800),
+            title="Douglas-Peucker Line Simplification",
+            shape=(2, 1),
+        )
+        self.plotter.set_background("white")
+        self.plotter.show_grid()
 
         # Parameters
         self.noise_amplitude = 0.1
@@ -27,206 +34,247 @@ class DouglasPeuckerDemo:
         self.y_noisy = None
         self.generate_data()
 
-        # Setup controls and initial plot
-        self.setup_controls()
+        # UI controls
+        self._setup_controls()
+
+        self.clean_line = None
+        self.noisy_line = None
+        self.noisy_points = None
+        self.simplified_line = None
+        self._camera_initialized = False
+
+        self._build_scene()
         self.update_plot()
 
     def generate_data(self):
         """Generate clean sine wave and add noise."""
         self.x_clean = np.linspace(0, 4 * np.pi, self.n_points)
         self.y_clean = np.sin(self.frequency * self.x_clean)
-
-        # Add noise
         noise = np.random.normal(0, self.noise_amplitude, self.n_points)
         self.y_noisy = self.y_clean + noise
 
     def douglas_peucker(self, points, tolerance):
-        """
-        Ramer-Douglas-Peucker algorithm for line simplification.
-
-        Args:
-            points: Array of shape (n, 2) containing x, y coordinates
-            tolerance: Maximum distance threshold
-
-        Returns:
-            Simplified array of points
-        """
         if len(points) < 3:
             return points
 
-        # Find the point with maximum distance from line between first and last
         start = points[0]
         end = points[-1]
 
         max_distance = 0
         max_index = 0
 
-        # Calculate perpendicular distance for each point
         for i in range(1, len(points) - 1):
             distance = self.perpendicular_distance(points[i], start, end)
             if distance > max_distance:
                 max_distance = distance
                 max_index = i
 
-        # If max distance is greater than tolerance, recursively simplify
         if max_distance > tolerance:
-            # Recursive call
-            left_points = self.douglas_peucker(points[:max_index + 1], tolerance)
+            left_points = self.douglas_peucker(points[: max_index + 1], tolerance)
             right_points = self.douglas_peucker(points[max_index:], tolerance)
-
-            # Combine results (remove duplicate point at max_index)
             result = np.vstack([left_points[:-1], right_points])
         else:
-            # All points between start and end can be removed
             result = np.array([start, end])
 
         return result
 
     def perpendicular_distance(self, point, line_start, line_end):
-        """
-        Calculate perpendicular distance from point to line.
-
-        Args:
-            point: Point coordinates (x, y)
-            line_start: Start of line segment (x, y)
-            line_end: End of line segment (x, y)
-
-        Returns:
-            Perpendicular distance
-        """
         x0, y0 = point
         x1, y1 = line_start
         x2, y2 = line_end
 
-        # Handle case where line segment is actually a point
         if x1 == x2 and y1 == y2:
-            return np.sqrt((x0 - x1)**2 + (y0 - y1)**2)
+            return np.sqrt((x0 - x1) ** 2 + (y0 - y1) ** 2)
 
-        # Formula for perpendicular distance from point to line
         numerator = abs((y2 - y1) * x0 - (x2 - x1) * y0 + x2 * y1 - y2 * x1)
-        denominator = np.sqrt((y2 - y1)**2 + (x2 - x1)**2)
-
+        denominator = np.sqrt((y2 - y1) ** 2 + (x2 - x1) ** 2)
         return numerator / denominator
 
-    def setup_controls(self):
-        """Setup GUI controls."""
-        # Noise amplitude slider
-        ax_noise = plt.axes([0.2, 0.15, 0.6, 0.03])
-        self.slider_noise = Slider(
-            ax_noise, 'Noise Amplitude', 0.0, 0.5,
-            valinit=self.noise_amplitude, valstep=0.01
-        )
-        self.slider_noise.on_changed(self.update_noise)
+    def _setup_controls(self):
+        dock = QtWidgets.QDockWidget("Controls", self.plotter)
+        dock.setAllowedAreas(QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea)
+        panel = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(panel)
 
-        # Tolerance slider
-        ax_tolerance = plt.axes([0.2, 0.10, 0.6, 0.03])
-        self.slider_tolerance = Slider(
-            ax_tolerance, 'DP Tolerance', 0.001, 0.3,
-            valinit=self.tolerance, valstep=0.001
-        )
-        self.slider_tolerance.on_changed(self.update_tolerance)
+        self.noise_slider = self._make_slider(0, 50, int(self.noise_amplitude * 100))
+        self.tolerance_slider = self._make_slider(1, 300, int(self.tolerance * 1000))
+        self.frequency_slider = self._make_slider(5, 50, int(self.frequency * 10))
 
-        # Frequency slider
-        ax_freq = plt.axes([0.2, 0.05, 0.6, 0.03])
-        self.slider_freq = Slider(
-            ax_freq, 'Frequency', 0.5, 5.0,
-            valinit=self.frequency, valstep=0.1
-        )
-        self.slider_freq.on_changed(self.update_frequency)
+        layout.addWidget(QtWidgets.QLabel("Noise Amplitude"))
+        layout.addWidget(self.noise_slider)
+        layout.addWidget(QtWidgets.QLabel("DP Tolerance"))
+        layout.addWidget(self.tolerance_slider)
+        layout.addWidget(QtWidgets.QLabel("Frequency"))
+        layout.addWidget(self.frequency_slider)
 
-        # Regenerate button
-        ax_regen = plt.axes([0.4, 0.01, 0.2, 0.03])
-        self.btn_regen = Button(ax_regen, 'Regenerate Noise')
-        self.btn_regen.on_clicked(self.regenerate_noise)
+        regen_button = QtWidgets.QPushButton("Regenerate Noise")
+        regen_button.clicked.connect(self.regenerate_noise)
+        layout.addWidget(regen_button)
+        layout.addStretch(1)
+
+        self.noise_slider.valueChanged.connect(self._on_noise_slider)
+        self.tolerance_slider.valueChanged.connect(self._on_tolerance_slider)
+        self.frequency_slider.valueChanged.connect(self._on_frequency_slider)
+
+        dock.setWidget(panel)
+        self.plotter.app_window.addDockWidget(QtCore.Qt.RightDockWidgetArea, dock)
+
+    @staticmethod
+    def _make_slider(min_val, max_val, value):
+        slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        slider.setMinimum(min_val)
+        slider.setMaximum(max_val)
+        slider.setValue(value)
+        return slider
+
+    def _on_noise_slider(self, value):
+        self.update_noise(value / 100.0)
+
+    def _on_tolerance_slider(self, value):
+        self.update_tolerance(value / 1000.0)
+
+    def _on_frequency_slider(self, value):
+        self.update_frequency(value / 10.0)
 
     def update_noise(self, val):
-        """Update noise amplitude."""
-        self.noise_amplitude = val
+        self.noise_amplitude = float(val)
         self.generate_data()
         self.update_plot()
 
     def update_tolerance(self, val):
-        """Update Douglas-Peucker tolerance."""
-        self.tolerance = val
+        self.tolerance = float(val)
         self.update_plot()
 
     def update_frequency(self, val):
-        """Update sine wave frequency."""
-        self.frequency = val
+        self.frequency = float(val)
         self.generate_data()
         self.update_plot()
 
-    def regenerate_noise(self, event):
-        """Regenerate noise with same parameters."""
+    def regenerate_noise(self):
         self.generate_data()
         self.update_plot()
 
-    def update_plot(self):
-        """Redraw plots with current parameters."""
-        # Clear both axes
-        self.ax1.clear()
-        self.ax2.clear()
+    @staticmethod
+    def _line_cells(points):
+        n_points = len(points)
+        if n_points < 2:
+            return np.array([], dtype=np.int64)
+        indices = np.arange(n_points - 1)
+        lines = np.column_stack((
+            np.full(n_points - 1, 2, dtype=np.int64),
+            indices,
+            indices + 1,
+        ))
+        return lines.ravel()
 
-        # Top plot: Original data with noise
-        self.ax1.plot(self.x_clean, self.y_clean, 'g--', linewidth=2,
-                     label='Clean Signal', alpha=0.7)
-        self.ax1.plot(self.x_clean, self.y_noisy, 'b-', linewidth=1,
-                     label=f'Noisy Signal (noise={self.noise_amplitude:.2f})', alpha=0.8)
-        self.ax1.scatter(self.x_clean, self.y_noisy, c='blue', s=10, alpha=0.3)
+    def _build_scene(self):
+        points_clean = np.column_stack(
+            [self.x_clean, self.y_clean, np.zeros_like(self.x_clean)]
+        )
+        points_noisy = np.column_stack(
+            [self.x_clean, self.y_noisy, np.zeros_like(self.x_clean)]
+        )
 
-        self.ax1.set_xlabel('x')
-        self.ax1.set_ylabel('y')
-        self.ax1.set_title('Original Signal with Noise')
-        self.ax1.legend(loc='upper right')
-        self.ax1.grid(True, alpha=0.3)
-        self.ax1.set_ylim(-2, 2)
+        self.clean_line = pv.PolyData(points_clean, self._line_cells(points_clean))
+        self.noisy_line = pv.PolyData(points_noisy, self._line_cells(points_noisy))
+        self.noisy_points = pv.PolyData(points_noisy)
 
-        # Apply Douglas-Peucker algorithm
         points = np.column_stack([self.x_clean, self.y_noisy])
         simplified = self.douglas_peucker(points, self.tolerance)
+        simplified_points = np.column_stack(
+            [simplified[:, 0], simplified[:, 1], np.zeros(len(simplified))]
+        )
+        self.simplified_line = pv.PolyData(
+            simplified_points, self._line_cells(simplified_points)
+        )
 
-        # Bottom plot: Comparison
-        self.ax2.plot(self.x_clean, self.y_clean, 'g--', linewidth=2,
-                     label='Clean Signal', alpha=0.7)
-        self.ax2.plot(self.x_clean, self.y_noisy, 'b-', linewidth=1,
-                     label='Noisy Signal', alpha=0.3)
-        self.ax2.plot(simplified[:, 0], simplified[:, 1], 'r-', linewidth=2,
-                     label=f'Douglas-Peucker (tol={self.tolerance:.3f})', marker='o',
-                     markersize=4)
+        self.plotter.subplot(0, 0)
+        self.plotter.add_text(
+            "Original Signal with Noise",
+            position="upper_left",
+            font_size=12,
+            name="title_top",
+        )
+        self.plotter.add_mesh(self.clean_line, color="green", line_width=3)
+        self.plotter.add_mesh(self.noisy_line, color="blue", line_width=2, opacity=0.7)
+        self.plotter.add_mesh(
+            self.noisy_points,
+            color="blue",
+            point_size=6,
+            render_points_as_spheres=True,
+        )
 
-        # Calculate and display statistics
+        self.plotter.subplot(1, 0)
+        self.plotter.add_text(
+            "Douglas-Peucker Line Simplification",
+            position="upper_left",
+            font_size=12,
+            name="title_bottom",
+        )
+        self.plotter.add_mesh(self.clean_line, color="green", line_width=3, opacity=0.6)
+        self.plotter.add_mesh(self.noisy_line, color="blue", line_width=2, opacity=0.3)
+        self.plotter.add_mesh(self.simplified_line, color="red", line_width=3)
+
+    def update_plot(self):
+        points_clean = np.column_stack(
+            [self.x_clean, self.y_clean, np.zeros_like(self.x_clean)]
+        )
+        points_noisy = np.column_stack(
+            [self.x_clean, self.y_noisy, np.zeros_like(self.x_clean)]
+        )
+
+        self.clean_line.points = points_clean
+        self.clean_line.lines = self._line_cells(points_clean)
+        self.clean_line.Modified()
+
+        self.noisy_line.points = points_noisy
+        self.noisy_line.lines = self._line_cells(points_noisy)
+        self.noisy_line.Modified()
+
+        self.noisy_points.points = points_noisy
+        self.noisy_points.Modified()
+
+        points = np.column_stack([self.x_clean, self.y_noisy])
+        simplified = self.douglas_peucker(points, self.tolerance)
+        simplified_points = np.column_stack(
+            [simplified[:, 0], simplified[:, 1], np.zeros(len(simplified))]
+        )
+
+        self.simplified_line.points = simplified_points
+        self.simplified_line.lines = self._line_cells(simplified_points)
+        self.simplified_line.Modified()
+
         original_points = len(self.x_clean)
-        simplified_points = len(simplified)
-        reduction = (1 - simplified_points / original_points) * 100
-
-        # Calculate error metrics
-        # Interpolate simplified curve to compare with original
+        simplified_points_count = len(simplified)
+        reduction = (1 - simplified_points_count / original_points) * 100
         simplified_y_interp = np.interp(self.x_clean, simplified[:, 0], simplified[:, 1])
-        mse = np.mean((self.y_clean - simplified_y_interp)**2)
+        mse = np.mean((self.y_clean - simplified_y_interp) ** 2)
 
-        stats_text = f'Points: {original_points} → {simplified_points} ({reduction:.1f}% reduction)\n'
-        stats_text += f'MSE vs Clean: {mse:.4f}'
-
-        self.ax2.text(0.02, 0.98, stats_text, transform=self.ax2.transAxes,
-                     verticalalignment='top', bbox=dict(boxstyle='round',
-                     facecolor='wheat', alpha=0.8), fontsize=9, family='monospace')
-
-        self.ax2.set_xlabel('x')
-        self.ax2.set_ylabel('y')
-        self.ax2.set_title('Douglas-Peucker Line Simplification')
-        self.ax2.legend(loc='upper right')
-        self.ax2.grid(True, alpha=0.3)
-        self.ax2.set_ylim(-2, 2)
-
-        self.fig.canvas.draw_idle()
+        stats_text = (
+            f"Points: {original_points} -> {simplified_points_count} ({reduction:.1f}% reduction)\n"
+            f"MSE vs Clean: {mse:.4f}"
+        )
+        self.plotter.subplot(1, 0)
+        self.plotter.add_text(stats_text, position=(10, 10), font_size=10, name="stats")
+        self._ensure_camera()
+        self.plotter.render()
 
     def show(self):
-        """Display the demo."""
-        plt.show()
+        self.plotter.show()
+        self.plotter.app.exec_()
+
+    def _ensure_camera(self):
+        if self._camera_initialized:
+            return
+        for row in range(2):
+            self.plotter.subplot(row, 0)
+            self.plotter.reset_camera()
+            self.plotter.enable_parallel_projection()
+            self.plotter.view_xy()
+        self._camera_initialized = True
 
 
 def main():
-    """Run the Douglas-Peucker demo."""
     demo = DouglasPeuckerDemo()
     demo.show()
 
@@ -239,18 +287,22 @@ def _build_vscode_url(path):
 
 
 def get_manifest():
-    return {
-        "title": "Douglas-Peucker Line Simplification",
-        "description": "Visualize noise reduction using the Ramer-Douglas-Peucker algorithm.\n\n"
-                       "Features:\n"
-                       "- Clean sine wave generation\n"
-                       "- Adjustable noise amplitude\n"
-                       "- Interactive tolerance control for simplification\n"
-                       "- Real-time comparison of noisy vs simplified signals\n"
-                       "- Point reduction statistics and error metrics\n"
-                       "- Configurable signal frequency",
-        "source_url": _build_vscode_url(__file__),
-    }
+    manifest = dict(DEMO_MANIFEST)
+    manifest["source_url"] = _build_vscode_url(__file__)
+    return manifest
+
+
+DEMO_MANIFEST = {
+    "title": "Douglas-Peucker Line Simplification",
+    "description": "Visualize noise reduction using the Ramer-Douglas-Peucker algorithm.\n\n"
+    "Features:\n"
+    "- Clean sine wave generation\n"
+    "- Adjustable noise amplitude\n"
+    "- Interactive tolerance control for simplification\n"
+    "- Real-time comparison of noisy vs simplified signals\n"
+    "- Point reduction statistics and error metrics\n"
+    "- Configurable signal frequency",
+}
 
 
 if __name__ == "__main__":

@@ -3,8 +3,7 @@ Yavuz Demo Launcher
 Interactive GUI to select and run different algorithm demonstrations.
 """
 
-import tkinter as tk
-from tkinter import ttk, scrolledtext
+import ast
 import subprocess
 import sys
 import threading
@@ -12,6 +11,9 @@ import traceback
 import webbrowser
 from importlib import util as importlib_util
 from pathlib import Path
+from urllib.parse import quote
+
+from PySide6 import QtCore, QtWidgets
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
@@ -19,17 +21,14 @@ from watchdog.observers import Observer
 class DemoFolderWatcher(FileSystemEventHandler):
     """Watch the demos folder for changes and auto-reload when detected."""
 
-    def __init__(self, launcher):
-        self.launcher = launcher
+    def __init__(self, refresh_callback):
+        self.refresh_callback = refresh_callback
         self.debounce_timer = None
 
     def on_any_event(self, event):
-        """Handle file system events with debouncing."""
-        # Ignore hidden files and cache directories
-        if event.src_path.endswith(('.pyc', '.pyo', '__pycache__', '.git')):
+        if event.src_path.endswith((".pyc", ".pyo", "__pycache__", ".git")):
             return
 
-        # Debounce - wait a bit for multiple events to settle
         if self.debounce_timer:
             self.debounce_timer.cancel()
 
@@ -38,129 +37,67 @@ class DemoFolderWatcher(FileSystemEventHandler):
         self.debounce_timer.start()
 
     def trigger_reload(self):
-        """Trigger a reload of the demo list."""
-        self.launcher.refresh_demos()
+        QtCore.QTimer.singleShot(0, self.refresh_callback)
 
 
-class DemoLauncher:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Yavuz Demo Launcher")
-        self.root.geometry("800x600")
-        self.root.resizable(True, True)
+class DemoLauncher(QtWidgets.QWidget):
+    demo_result = QtCore.Signal(object, object, str, str)
 
-        # Configure style
-        style = ttk.Style()
-        style.theme_use('clam')
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Yavuz Demo Launcher")
+        self.resize(900, 650)
 
-        # Main container
-        main_frame = ttk.Frame(root, padding="10")
-        main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-
-        # Configure grid weights
-        root.columnconfigure(0, weight=1)
-        root.rowconfigure(0, weight=1)
-        main_frame.columnconfigure(0, weight=1)
-        main_frame.rowconfigure(1, weight=1)
-
-        # Title
-        title_label = ttk.Label(
-            main_frame,
-            text="🚀 Yavuz Algorithm Demos",
-            font=('Arial', 20, 'bold')
-        )
-        title_label.grid(row=0, column=0, pady=(0, 20))
-
-        # Demo list frame
-        list_frame = ttk.LabelFrame(main_frame, text="Available Demos", padding="10")
-        list_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
-        list_frame.columnconfigure(0, weight=1)
-        list_frame.rowconfigure(0, weight=1)
-
-        # Listbox with scrollbar
-        scrollbar = ttk.Scrollbar(list_frame)
-        scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
-
-        self.demo_listbox = tk.Listbox(
-            list_frame,
-            yscrollcommand=scrollbar.set,
-            font=('Arial', 11),
-            height=10,
-            selectmode=tk.SINGLE
-        )
-        self.demo_listbox.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-        scrollbar.config(command=self.demo_listbox.yview)
-
-        # Bind selection event
-        self.demo_listbox.bind('<<ListboxSelect>>', self.on_demo_select)
-        self.demo_listbox.bind('<Double-Button-1>', lambda e: self.run_selected_demo())
-
-        # Description frame
-        desc_frame = ttk.LabelFrame(main_frame, text="Demo Description", padding="10")
-        desc_frame.grid(row=2, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
-        desc_frame.columnconfigure(0, weight=1)
-        desc_frame.rowconfigure(0, weight=1)
-
-        self.description_text = scrolledtext.ScrolledText(
-            desc_frame,
-            wrap=tk.WORD,
-            width=60,
-            height=8,
-            font=('Arial', 10),
-            state=tk.DISABLED
-        )
-        self.description_text.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-
-        # Buttons frame
-        button_frame = ttk.Frame(main_frame)
-        button_frame.grid(row=3, column=0, pady=(10, 0))
-
-        self.run_button = ttk.Button(
-            button_frame,
-            text="▶ Run Selected Demo",
-            command=self.run_selected_demo,
-            state=tk.DISABLED
-        )
-        self.run_button.grid(row=0, column=0, padx=5)
-
-        self.open_source_button = ttk.Button(
-            button_frame,
-            text="Open Source",
-            command=self.open_selected_source,
-            state=tk.DISABLED
-        )
-        self.open_source_button.grid(row=0, column=1, padx=5)
-
-        ttk.Button(
-            button_frame,
-            text="❌ Exit",
-            command=root.quit
-        ).grid(row=0, column=2, padx=5)
-
-        # Status bar
-        self.status_var = tk.StringVar()
-        self.status_var.set("Ready. Select a demo to see details.")
-        status_bar = ttk.Label(
-            main_frame,
-            textvariable=self.status_var,
-            relief=tk.SUNKEN,
-            anchor=tk.W
-        )
-        status_bar.grid(row=4, column=0, sticky=(tk.W, tk.E), pady=(10, 0))
-
-        # Demo definitions
-        self.demos = self.discover_demos()
-        self.populate_demo_list()
-
-        # Setup file watcher for demos folder
+        self.demos = []
         self.observer = None
+
+        self._build_ui()
+        self.demo_result.connect(self._handle_demo_result)
+        self.refresh_demos()
         self.start_demos_watcher()
 
-        # Handle window close
-        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+    def _build_ui(self):
+        layout = QtWidgets.QVBoxLayout(self)
+
+        title = QtWidgets.QLabel("Yavuz Algorithm Demos")
+        title.setAlignment(QtCore.Qt.AlignCenter)
+        title_font = title.font()
+        title_font.setPointSize(18)
+        title_font.setBold(True)
+        title.setFont(title_font)
+        layout.addWidget(title)
+
+        self.list_widget = QtWidgets.QListWidget()
+        self.list_widget.currentRowChanged.connect(self.on_demo_select)
+        self.list_widget.itemDoubleClicked.connect(lambda _: self.run_selected_demo())
+        layout.addWidget(self.list_widget, stretch=2)
+
+        self.description = QtWidgets.QTextEdit()
+        self.description.setReadOnly(True)
+        self.description.setMinimumHeight(160)
+        layout.addWidget(self.description)
+
+        button_layout = QtWidgets.QHBoxLayout()
+        self.run_button = QtWidgets.QPushButton("Run Selected Demo")
+        self.run_button.clicked.connect(self.run_selected_demo)
+        self.run_button.setEnabled(False)
+        button_layout.addWidget(self.run_button)
+
+        self.open_source_button = QtWidgets.QPushButton("Open Source")
+        self.open_source_button.clicked.connect(self.open_selected_source)
+        self.open_source_button.setEnabled(False)
+        button_layout.addWidget(self.open_source_button)
+
+        exit_button = QtWidgets.QPushButton("Exit")
+        exit_button.clicked.connect(self.close)
+        button_layout.addWidget(exit_button)
+
+        layout.addLayout(button_layout)
+
+        self.status = QtWidgets.QLabel("Ready. Select a demo to see details.")
+        layout.addWidget(self.status)
 
     def discover_demos(self):
-        """Discover all available demos in the demos directory."""
         demos = []
         demos_dir = Path(__file__).resolve().parents[2] / "demos"
 
@@ -177,19 +114,24 @@ class DemoLauncher:
             if not manifest:
                 continue
 
-            demos.append({
-                "id": f"{script_path.parent.name}/{script_path.stem}",
-                "name": manifest["title"],
-                "description": manifest["description"],
-                "source_url": manifest["source_url"],
-                "path": script_path
-            })
+            demos.append(
+                {
+                    "id": f"{script_path.parent.name}/{script_path.stem}",
+                    "name": manifest["title"],
+                    "description": manifest["description"],
+                    "source_url": manifest["source_url"],
+                    "path": script_path,
+                }
+            )
 
         demos.sort(key=lambda demo: demo["name"].lower())
         return demos
 
     def load_manifest(self, script_path):
-        """Load a demo manifest from a script file."""
+        manifest = self._load_manifest_from_source(script_path)
+        if manifest:
+            return manifest
+
         module_name = f"yavuz_demo_{script_path.parent.name}_{script_path.stem}"
         spec = importlib_util.spec_from_file_location(module_name, script_path)
         if not spec or not spec.loader:
@@ -213,109 +155,131 @@ class DemoLauncher:
         if not isinstance(manifest, dict):
             return None
 
+        manifest.setdefault("source_url", self._build_vscode_url(script_path))
         required_keys = {"title", "description", "source_url"}
         if not required_keys.issubset(manifest.keys()):
             return None
 
         return manifest
 
-    def populate_demo_list(self):
-        """Populate the listbox with available demos."""
-        self.demo_listbox.delete(0, tk.END)
+    def _load_manifest_from_source(self, script_path):
+        try:
+            source = script_path.read_text(encoding="utf-8")
+        except Exception:
+            return None
+
+        try:
+            module_ast = ast.parse(source)
+        except SyntaxError:
+            return None
+
+        docstring = ast.get_docstring(module_ast) or ""
+        manifest = None
+
+        for node in module_ast.body:
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and target.id == "DEMO_MANIFEST":
+                        try:
+                            manifest = ast.literal_eval(node.value)
+                        except Exception:
+                            manifest = None
+                        break
+
+        if manifest is None:
+            manifest = {}
+
+        if not isinstance(manifest, dict):
+            return None
+
+        if not manifest.get("title"):
+            first_line = docstring.splitlines()[0] if docstring else script_path.stem
+            manifest["title"] = first_line
+
+        if not manifest.get("description"):
+            manifest["description"] = docstring or "No description available."
+
+        manifest["source_url"] = self._build_vscode_url(script_path)
+        return manifest
+
+    @staticmethod
+    def _build_vscode_url(path):
+        posix_path = Path(path).resolve().as_posix()
+        if not posix_path.startswith("/"):
+            posix_path = f"/{posix_path}"
+        return f"vscode://file{quote(posix_path, safe='/:')}"
+
+    def refresh_demos(self):
+        self.demos = self.discover_demos()
+        self.list_widget.clear()
 
         if not self.demos:
-            self.demo_listbox.insert(tk.END, "No demos found. Run 'refresh' to scan again.")
-            self.status_var.set("No demos found in demos/ directory")
+            self.list_widget.addItem("No demos found. Refresh to scan again.")
+            self.status.setText("No demos found in demos/ directory")
             return
 
         for demo in self.demos:
-            self.demo_listbox.insert(tk.END, demo["name"])
+            self.list_widget.addItem(demo["name"])
 
-        self.status_var.set(f"Found {len(self.demos)} demo(s). Select one to view details.")
+        self.status.setText(f"Found {len(self.demos)} demo(s). Select one to view details.")
+        self.description.clear()
+        self.run_button.setEnabled(False)
+        self.open_source_button.setEnabled(False)
 
-    def on_demo_select(self, event):
-        """Handle demo selection."""
-        selection = self.demo_listbox.curselection()
-        if not selection:
+    def on_demo_select(self, idx):
+        if idx < 0 or idx >= len(self.demos):
             return
 
-        idx = selection[0]
-        if idx < len(self.demos):
-            demo = self.demos[idx]
-
-            # Update description
-            self.description_text.config(state=tk.NORMAL)
-            self.description_text.delete(1.0, tk.END)
-            description = f"{demo['description']}\n\nSource: {demo['source_url']}"
-            self.description_text.insert(1.0, description)
-            self.description_text.config(state=tk.DISABLED)
-
-            # Enable run button
-            self.run_button.config(state=tk.NORMAL)
-            self.open_source_button.config(state=tk.NORMAL)
-
-            self.status_var.set(f"Selected: {demo['name']}")
+        demo = self.demos[idx]
+        description = f"{demo['description']}\n\nSource: {demo['source_url']}"
+        self.description.setPlainText(description)
+        self.run_button.setEnabled(True)
+        self.open_source_button.setEnabled(True)
+        self.status.setText(f"Selected: {demo['name']}")
 
     def run_selected_demo(self):
-        """Run the selected demo."""
-        selection = self.demo_listbox.curselection()
-        if not selection:
+        idx = self.list_widget.currentRow()
+        if idx < 0 or idx >= len(self.demos):
             return
 
-        idx = selection[0]
-        if idx < len(self.demos):
-            demo = self.demos[idx]
-            self.status_var.set(f"Launching: {demo['name']}...")
-
-            try:
-                self._launch_demo_process(demo)
-            except Exception as e:
-                self.status_var.set(f"✗ Error launching demo: {str(e)}")
+        demo = self.demos[idx]
+        self.status.setText(f"Launching: {demo['name']}...")
+        try:
+            self._launch_demo_process(demo)
+        except Exception as exc:
+            self.status.setText(f"Error launching demo: {exc}")
 
     def _launch_demo_process(self, demo):
-        """Run the demo in a subprocess and capture crashes."""
         def _run():
             try:
                 process = subprocess.Popen(
                     [sys.executable, str(demo["path"])],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
-                    text=True
+                    text=True,
                 )
                 stdout, stderr = process.communicate()
-                self.root.after(
-                    0,
-                    self._handle_demo_result,
-                    demo,
-                    process.returncode,
-                    stdout,
-                    stderr
-                )
+                self.demo_result.emit(demo, process.returncode, stdout, stderr)
             except Exception:
                 error_text = traceback.format_exc()
-                self.root.after(
-                    0,
-                    self._handle_demo_result,
-                    demo,
-                    1,
-                    "",
-                    error_text
-                )
+                self.demo_result.emit(demo, 1, "", error_text)
 
         threading.Thread(target=_run, daemon=True).start()
-        self.status_var.set(f"✓ Launched: {demo['name']}")
+        self.status.setText(f"Launched: {demo['name']}")
 
+    @QtCore.Slot(object, object, str, str)
     def _handle_demo_result(self, demo, return_code, stdout, stderr):
-        """Show crash modal when a demo exits with errors."""
-        error_hint = "Traceback" in (stderr or "")
-        if return_code == 0 and not error_hint:
+        stdout = stdout or ""
+        stderr = stderr or ""
+        has_output = bool(stdout.strip() or stderr.strip())
+        error_hint = "Traceback" in stderr
+        if return_code == 0 and not error_hint and not has_output:
             return
 
         report = self._build_crash_report(demo, return_code, stdout, stderr)
         self._show_crash_modal(demo["name"], report)
 
     def _build_crash_report(self, demo, return_code, stdout, stderr):
-        """Build a structured report for AI assistance."""
         return (
             "Demo Crash Report\n"
             f"Demo Name: {demo['name']}\n"
@@ -323,119 +287,85 @@ class DemoLauncher:
             f"Demo Path: {demo['path']}\n"
             f"Python: {sys.version.replace(chr(10), ' ')}\n"
             f"Platform: {sys.platform}\n"
-            f"Exit Code: {return_code}\n"
-            "\n"
+            f"Exit Code: {return_code}\n\n"
             "--- STDERR ---\n"
-            f"{stderr.strip()}\n"
-            "\n"
+            f"{stderr.strip()}\n\n"
             "--- STDOUT ---\n"
             f"{stdout.strip()}\n"
         )
 
     def _show_crash_modal(self, demo_name, report):
-        """Show a modal dialog with crash details and copy helper."""
-        modal = tk.Toplevel(self.root)
-        modal.title("Demo crashed")
-        modal.geometry("700x500")
-        modal.transient(self.root)
-        modal.grab_set()
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("Demo crashed")
+        dialog.resize(720, 520)
 
-        header = ttk.Label(
-            modal,
-            text=(
-                f"{demo_name} stopped unexpectedly. "
-                "Copy the report and paste it into the chat to get AI help."
-            ),
-            wraplength=660,
-            justify=tk.LEFT
+        layout = QtWidgets.QVBoxLayout(dialog)
+        header = QtWidgets.QLabel(
+            f"{demo_name} stopped unexpectedly. Copy the report to share in chat."
         )
-        header.pack(padx=12, pady=(12, 8), anchor=tk.W)
+        header.setWordWrap(True)
+        layout.addWidget(header)
 
-        report_box = scrolledtext.ScrolledText(
-            modal,
-            wrap=tk.WORD,
-            height=18,
-            font=("Consolas", 10)
-        )
-        report_box.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 12))
-        report_box.insert(tk.END, report)
-        report_box.config(state=tk.DISABLED)
+        report_box = QtWidgets.QTextEdit()
+        report_box.setReadOnly(True)
+        report_box.setPlainText(report)
+        layout.addWidget(report_box)
 
-        button_frame = ttk.Frame(modal)
-        button_frame.pack(pady=(0, 12))
+        button_row = QtWidgets.QHBoxLayout()
+        copy_button = QtWidgets.QPushButton("Copy Report")
+        copy_button.clicked.connect(lambda: self._copy_to_clipboard(report))
+        button_row.addWidget(copy_button)
 
-        ttk.Button(
-            button_frame,
-            text="Copy Report",
-            command=lambda: self._copy_to_clipboard(report)
-        ).grid(row=0, column=0, padx=6)
+        close_button = QtWidgets.QPushButton("Close")
+        close_button.clicked.connect(dialog.close)
+        button_row.addWidget(close_button)
 
-        ttk.Button(
-            button_frame,
-            text="Close",
-            command=modal.destroy
-        ).grid(row=0, column=1, padx=6)
+        layout.addLayout(button_row)
+        dialog.exec()
+
 
     def _copy_to_clipboard(self, text):
-        """Copy crash report to clipboard with demo metadata."""
-        self.root.clipboard_clear()
-        self.root.clipboard_append(text)
-        self.root.update()
+        clipboard = QtWidgets.QApplication.clipboard()
+        clipboard.setText(text)
 
     def open_selected_source(self):
-        """Open the selected demo source in VS Code."""
-        selection = self.demo_listbox.curselection()
-        if not selection:
+        idx = self.list_widget.currentRow()
+        if idx < 0 or idx >= len(self.demos):
             return
 
-        idx = selection[0]
-        if idx < len(self.demos):
-            demo = self.demos[idx]
-            try:
-                webbrowser.open(demo["source_url"])
-                self.status_var.set(f"Opened source for: {demo['name']}")
-            except Exception as e:
-                self.status_var.set(f"✗ Error opening source: {str(e)}")
-
-    def refresh_demos(self):
-        """Refresh the demo list."""
-        self.demos = self.discover_demos()
-        self.populate_demo_list()
-        self.description_text.config(state=tk.NORMAL)
-        self.description_text.delete(1.0, tk.END)
-        self.description_text.config(state=tk.DISABLED)
-        self.run_button.config(state=tk.DISABLED)
-        self.open_source_button.config(state=tk.DISABLED)
-        self.status_var.set(f"Demo list updated. Found {len(self.demos)} demo(s).")
+        demo = self.demos[idx]
+        try:
+            webbrowser.open(demo["source_url"])
+            self.status.setText(f"Opened source for: {demo['name']}")
+        except Exception as exc:
+            self.status.setText(f"Error opening source: {exc}")
 
     def start_demos_watcher(self):
-        """Start watching the demos folder for changes."""
         try:
             demos_dir = Path(__file__).resolve().parents[2] / "demos"
             if demos_dir.exists():
                 self.observer = Observer()
                 self.observer.schedule(
-                    DemoFolderWatcher(self),
+                    DemoFolderWatcher(self.refresh_demos),
                     str(demos_dir),
-                    recursive=True
+                    recursive=True,
                 )
                 self.observer.start()
-        except Exception as e:
-            print(f"Warning: Could not start file watcher: {e}")
+        except Exception as exc:
+            print(f"Warning: Could not start file watcher: {exc}")
 
-    def on_close(self):
-        """Clean up and close the application."""
+    def closeEvent(self, event):
         if self.observer:
             self.observer.stop()
             self.observer.join()
-        self.root.destroy()
+        event.accept()
 
 
 def main():
-    """Launch the demo selector GUI."""
-    root = tk.Tk()
-    app = DemoLauncher(root)
-    root.mainloop()
+    app = QtWidgets.QApplication(sys.argv)
+    launcher = DemoLauncher()
+    launcher.show()
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":

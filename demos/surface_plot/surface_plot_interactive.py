@@ -1,23 +1,25 @@
 """
 Interactive 3D surface plot with parameter controls.
-Demonstrates numpy computations and matplotlib 3D plotting with GUI widgets.
+Demonstrates numpy computations and PyVista 3D plotting with Qt widgets.
 """
 
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.widgets import Slider, TextBox
 from pathlib import Path
 from urllib.parse import quote
-from mpl_toolkits.mplot3d import Axes3D
+
+import numpy as np
+import pyvista as pv
+from pyvistaqt import BackgroundPlotter
 
 
 class InteractiveSurface:
     def __init__(self):
-        self.fig = plt.figure(figsize=(12, 8))
-
-        # Create 3D axis
-        self.ax = self.fig.add_subplot(111, projection='3d')
-        self.fig.subplots_adjust(bottom=0.25)
+        self.plotter = BackgroundPlotter(
+            window_size=(1200, 800),
+            title="Interactive 3D Surface",
+        )
+        self.plotter.set_background("white")
+        self.plotter.add_axes()
+        self.plotter.show_grid()
 
         # Initial parameters
         self.frequency = 1.0
@@ -25,14 +27,8 @@ class InteractiveSurface:
         self.phase = 0.0
 
         # Create initial surface
-        self.X, self.Y, self.Z = self.compute_surface()
-        self.surf = self.ax.plot_surface(self.X, self.Y, self.Z, cmap='viridis', alpha=0.8)
-
-        # Set labels
-        self.ax.set_xlabel('X')
-        self.ax.set_ylabel('Y')
-        self.ax.set_zlabel('Z')
-        self.ax.set_title('Interactive 3D Surface: Z = A*sin(f*√(X²+Y²) + φ)')
+        self.mesh_actor = None
+        self.update_plot()
 
         # Create sliders
         self.setup_controls()
@@ -48,29 +44,30 @@ class InteractiveSurface:
 
     def setup_controls(self):
         """Setup GUI controls (sliders and text boxes)."""
-        # Frequency slider
-        ax_freq = plt.axes([0.2, 0.15, 0.6, 0.03])
-        self.slider_freq = Slider(
-            ax_freq, 'Frequency', 0.1, 5.0,
-            valinit=self.frequency, valstep=0.1
+        self.plotter.add_slider_widget(
+            self.update_frequency,
+            [0.1, 5.0],
+            value=self.frequency,
+            title="Frequency",
+            pointa=(0.02, 0.1),
+            pointb=(0.34, 0.1),
         )
-        self.slider_freq.on_changed(self.update_frequency)
-
-        # Amplitude slider
-        ax_amp = plt.axes([0.2, 0.10, 0.6, 0.03])
-        self.slider_amp = Slider(
-            ax_amp, 'Amplitude', 0.1, 3.0,
-            valinit=self.amplitude, valstep=0.1
+        self.plotter.add_slider_widget(
+            self.update_amplitude,
+            [0.1, 3.0],
+            value=self.amplitude,
+            title="Amplitude",
+            pointa=(0.36, 0.1),
+            pointb=(0.68, 0.1),
         )
-        self.slider_amp.on_changed(self.update_amplitude)
-
-        # Phase slider
-        ax_phase = plt.axes([0.2, 0.05, 0.6, 0.03])
-        self.slider_phase = Slider(
-            ax_phase, 'Phase', 0.0, 2*np.pi,
-            valinit=self.phase, valstep=0.1
+        self.plotter.add_slider_widget(
+            self.update_phase,
+            [0.0, 2 * np.pi],
+            value=self.phase,
+            title="Phase",
+            pointa=(0.7, 0.1),
+            pointb=(0.98, 0.1),
         )
-        self.slider_phase.on_changed(self.update_phase)
 
     def update_frequency(self, val):
         """Update frequency parameter."""
@@ -89,20 +86,25 @@ class InteractiveSurface:
 
     def update_plot(self):
         """Redraw the surface with updated parameters."""
-        self.ax.clear()
-        self.X, self.Y, self.Z = self.compute_surface()
-        self.surf = self.ax.plot_surface(self.X, self.Y, self.Z, cmap='viridis', alpha=0.8)
+        if self.mesh_actor:
+            self.plotter.remove_actor(self.mesh_actor)
 
-        self.ax.set_xlabel('X')
-        self.ax.set_ylabel('Y')
-        self.ax.set_zlabel('Z')
-        self.ax.set_title('Interactive 3D Surface: Z = A*sin(f*√(X²+Y²) + φ)')
+        x, y, z = self.compute_surface()
+        grid = pv.StructuredGrid(x, y, z)
+        grid["height"] = z.ravel(order="F")
 
-        self.fig.canvas.draw_idle()
+        self.mesh_actor = self.plotter.add_mesh(
+            grid,
+            scalars="height",
+            cmap="viridis",
+            smooth_shading=True,
+        )
+        self.plotter.reset_camera()
 
     def show(self):
         """Display the interactive plot."""
-        plt.show()
+        self.plotter.show()
+        self.plotter.app.exec_()
 
 
 def main():
@@ -119,16 +121,20 @@ def _build_vscode_url(path):
 
 
 def get_manifest():
-    return {
-        "title": "Interactive 3D Surface Plot",
-        "description": "Real-time 3D surface visualization with adjustable parameters.\n\n"
-                       "Features:\n"
-                       "- Interactive 3D surface rendering\n"
-                       "- Frequency, amplitude, and phase controls\n"
-                       "- Slider-based parameter adjustment\n"
-                       "- Mathematical function: Z = A*sin(f*sqrt(X^2+Y^2) + phi)",
-        "source_url": _build_vscode_url(__file__),
-    }
+    manifest = dict(DEMO_MANIFEST)
+    manifest["source_url"] = _build_vscode_url(__file__)
+    return manifest
+
+
+DEMO_MANIFEST = {
+    "title": "Interactive 3D Surface Plot",
+    "description": "Real-time 3D surface visualization with adjustable parameters.\n\n"
+    "Features:\n"
+    "- Interactive 3D surface rendering\n"
+    "- Frequency, amplitude, and phase controls\n"
+    "- Slider-based parameter adjustment\n"
+    "- Mathematical function: Z = A*sin(f*sqrt(X^2+Y^2) + phi)",
+}
 
 
 if __name__ == "__main__":

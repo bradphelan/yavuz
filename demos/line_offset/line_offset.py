@@ -5,179 +5,101 @@ Visualize parallel line offsets with interactive control.
 
 from pathlib import Path
 from urllib.parse import quote
-import tkinter as tk
-from tkinter import ttk
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-from matplotlib.figure import Figure
+
 import numpy as np
+import pyvista as pv
+from pyvistaqt import BackgroundPlotter
 
 
 class LineOffsetDemo:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Line Offset Visualizer")
-        self.root.geometry("1000x700")
+    def __init__(self):
+        self.plotter = BackgroundPlotter(
+            window_size=(1200, 800),
+            title="Line Offset Visualizer",
+        )
+        self.plotter.set_background("white")
+        self.plotter.show_grid()
 
-        # Parameters
         self.start_x = 1.0
         self.start_y = 1.0
         self.end_x = 8.0
         self.end_y = 6.0
         self.num_offsets = 5
         self.stepover = 0.5
-        self.dragging_point = None
 
-        # Create main layout
-        main_frame = ttk.Frame(root)
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        self.actors = []
 
-        # Controls panel
-        control_frame = ttk.LabelFrame(main_frame, text="Controls", padding=10)
-        control_frame.pack(side=tk.LEFT, fill=tk.BOTH, padx=(0, 10))
-
-        # Number of offsets slider
-        ttk.Label(control_frame, text="Number of Offsets:").pack(anchor=tk.W, pady=(0, 5))
-        self.num_offsets_var = tk.IntVar(value=self.num_offsets)
-        num_offsets_scale = ttk.Scale(
-            control_frame,
-            from_=1,
-            to=20,
-            orient=tk.HORIZONTAL,
-            variable=self.num_offsets_var,
-            command=self._on_param_change,
-        )
-        num_offsets_scale.pack(fill=tk.X, pady=(0, 10))
-        self.num_offsets_label = ttk.Label(control_frame, text=f"{self.num_offsets}")
-        self.num_offsets_label.pack(anchor=tk.W, pady=(0, 15))
-
-        # Stepover slider
-        ttk.Label(control_frame, text="Stepover Distance:").pack(anchor=tk.W, pady=(0, 5))
-        self.stepover_var = tk.DoubleVar(value=self.stepover)
-        stepover_scale = ttk.Scale(
-            control_frame,
-            from_=0.1,
-            to=2.0,
-            orient=tk.HORIZONTAL,
-            variable=self.stepover_var,
-            command=self._on_param_change,
-        )
-        stepover_scale.pack(fill=tk.X, pady=(0, 10))
-        self.stepover_label = ttk.Label(control_frame, text=f"{self.stepover:.2f}")
-        self.stepover_label.pack(anchor=tk.W, pady=(0, 15))
-
-        # Point coordinates display
-        ttk.Label(control_frame, text="Start Point:", font=("Arial", 10, "bold")).pack(
-            anchor=tk.W, pady=(10, 5)
-        )
-        self.start_label = ttk.Label(
-            control_frame, text=f"({self.start_x:.2f}, {self.start_y:.2f})"
-        )
-        self.start_label.pack(anchor=tk.W, pady=(0, 10))
-
-        ttk.Label(control_frame, text="End Point:", font=("Arial", 10, "bold")).pack(
-            anchor=tk.W, pady=(5, 5)
-        )
-        self.end_label = ttk.Label(
-            control_frame, text=f"({self.end_x:.2f}, {self.end_y:.2f})"
-        )
-        self.end_label.pack(anchor=tk.W, pady=(0, 10))
-
-        ttk.Label(control_frame, text="(Drag points on plot)", font=("Arial", 9, "italic")).pack(
-            anchor=tk.W
-        )
-
-        # Canvas for plot
-        canvas_frame = ttk.LabelFrame(main_frame, text="Visualization", padding=5)
-        canvas_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
-
-        self.fig = Figure(figsize=(7, 6), dpi=100)
-        self.ax = self.fig.add_subplot(111)
-        self.canvas = FigureCanvasTkAgg(self.fig, master=canvas_frame)
-        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-
-        # Bind mouse events for dragging
-        self.canvas.mpl_connect("button_press_event", self._on_press)
-        self.canvas.mpl_connect("button_release_event", self._on_release)
-        self.canvas.mpl_connect("motion_notify_event", self._on_motion)
-
-        # Initial draw
+        self._setup_controls()
+        self._setup_widgets()
         self._update_plot()
 
-    def _on_param_change(self, value):
-        """Update parameters from sliders."""
-        self.num_offsets = int(self.num_offsets_var.get())
-        self.stepover = float(self.stepover_var.get())
-        self.num_offsets_label.config(text=f"{self.num_offsets}")
-        self.stepover_label.config(text=f"{self.stepover:.2f}")
+    def _setup_controls(self):
+        self.plotter.add_slider_widget(
+            self._on_num_offsets,
+            [1, 20],
+            value=self.num_offsets,
+            title="Offsets",
+            pointa=(0.02, 0.1),
+            pointb=(0.32, 0.1),
+        )
+        self.plotter.add_slider_widget(
+            self._on_stepover,
+            [0.1, 2.0],
+            value=self.stepover,
+            title="Stepover",
+            pointa=(0.35, 0.1),
+            pointb=(0.65, 0.1),
+        )
+        self.plotter.add_text("Drag the spheres to move the line", position="upper_left", font_size=10)
+        self._update_labels()
+
+    def _setup_widgets(self):
+        self.plotter.add_sphere_widget(
+            self._on_start_move,
+            center=(self.start_x, self.start_y, 0.0),
+            radius=0.15,
+            color="blue",
+        )
+        self.plotter.add_sphere_widget(
+            self._on_end_move,
+            center=(self.end_x, self.end_y, 0.0),
+            radius=0.15,
+            color="blue",
+        )
+
+    def _on_num_offsets(self, value):
+        self.num_offsets = int(round(value))
         self._update_plot()
 
-    def _on_press(self, event):
-        """Handle mouse press for point dragging."""
-        if event.inaxes != self.ax:
-            return
+    def _on_stepover(self, value):
+        self.stepover = float(value)
+        self._update_plot()
 
-        x, y = event.xdata, event.ydata
-        if x is None or y is None:
-            return
+    def _on_start_move(self, center):
+        self.start_x, self.start_y = center[0], center[1]
+        self._update_plot()
 
-        # Check proximity to start point
-        dist_start = np.sqrt((x - self.start_x) ** 2 + (y - self.start_y) ** 2)
-        # Check proximity to end point
-        dist_end = np.sqrt((x - self.end_x) ** 2 + (y - self.end_y) ** 2)
-
-        threshold = 0.3
-        if dist_start < threshold:
-            self.dragging_point = "start"
-        elif dist_end < threshold:
-            self.dragging_point = "end"
-
-    def _on_release(self, event):
-        """Handle mouse release."""
-        self.dragging_point = None
-
-    def _on_motion(self, event):
-        """Handle mouse motion for dragging."""
-        if event.inaxes != self.ax or self.dragging_point is None:
-            return
-
-        x, y = event.xdata, event.ydata
-        if x is None or y is None:
-            return
-
-        if self.dragging_point == "start":
-            self.start_x = x
-            self.start_y = y
-            self.start_label.config(text=f"({self.start_x:.2f}, {self.start_y:.2f})")
-        elif self.dragging_point == "end":
-            self.end_x = x
-            self.end_y = y
-            self.end_label.config(text=f"({self.end_x:.2f}, {self.end_y:.2f})")
-
+    def _on_end_move(self, center):
+        self.end_x, self.end_y = center[0], center[1]
         self._update_plot()
 
     def _get_offset_line(self, p1, p2, distance):
-        """Calculate offset line parallel to original line."""
-        # Direction vector
         dx = p2[0] - p1[0]
         dy = p2[1] - p1[1]
-        length = np.sqrt(dx**2 + dy**2)
+        length = np.sqrt(dx ** 2 + dy ** 2)
 
         if length == 0:
             return p1, p2
 
-        # Perpendicular vector (rotated 90 degrees)
         px = -dy / length
         py = dx / length
 
-        # Offset points
         offset_p1 = (p1[0] + px * distance, p1[1] + py * distance)
         offset_p2 = (p2[0] + px * distance, p2[1] + py * distance)
 
         return offset_p1, offset_p2
 
     def _get_end_cap(self, center, angle_start, angle_end, radius, steps=60):
-        """Generate arc points for a rounded end cap."""
         if angle_end < angle_start:
             angle_end += 2 * np.pi
         angles = np.linspace(angle_start, angle_end, steps)
@@ -185,47 +107,62 @@ class LineOffsetDemo:
         y = center[1] + radius * np.sin(angles)
         return x, y
 
+    def _line_actor(self, points, color, width=2):
+        poly = pv.lines_from_points(points)
+        return self.plotter.add_mesh(poly, color=color, line_width=width)
+
+    def _update_labels(self):
+        self.plotter.add_text(
+            f"Start: ({self.start_x:.2f}, {self.start_y:.2f})",
+            position=(10, 60),
+            font_size=10,
+            name="start_label",
+        )
+        self.plotter.add_text(
+            f"End: ({self.end_x:.2f}, {self.end_y:.2f})",
+            position=(10, 40),
+            font_size=10,
+            name="end_label",
+        )
+
+    def _clear_actors(self):
+        for actor in self.actors:
+            self.plotter.remove_actor(actor)
+        self.actors = []
+
     def _update_plot(self):
-        """Redraw the plot with current parameters."""
-        self.ax.clear()
+        self._clear_actors()
 
         p1 = (self.start_x, self.start_y)
         p2 = (self.end_x, self.end_y)
 
-        # Draw original line
-        self.ax.plot(
-            [p1[0], p2[0]], [p1[1], p2[1]], "b-", linewidth=2.5, label="Original", zorder=10
-        )
-        self.ax.plot([p1[0]], [p1[1]], "bo", markersize=10, zorder=11)
-        self.ax.plot([p2[0]], [p2[1]], "bs", markersize=10, zorder=11)
+        base_points = np.array([[p1[0], p1[1], 0.0], [p2[0], p2[1], 0.0]])
+        self.actors.append(self._line_actor(base_points, color="blue", width=4))
 
-        # Draw offset lines on both sides with rounded end caps
-        colors = plt.cm.RdYlGn(np.linspace(0.3, 0.9, self.num_offsets))
+        colors = self._gradient_colors(self.num_offsets)
         dx = p2[0] - p1[0]
         dy = p2[1] - p1[1]
         theta = np.arctan2(dy, dx)
+
+        all_x = [p1[0], p2[0]]
+        all_y = [p1[1], p2[1]]
 
         for i in range(self.num_offsets):
             distance = (i + 1) * self.stepover
             offset_p1_pos, offset_p2_pos = self._get_offset_line(p1, p2, distance)
             offset_p1_neg, offset_p2_neg = self._get_offset_line(p1, p2, -distance)
 
-            self.ax.plot(
-                [offset_p1_pos[0], offset_p2_pos[0]],
-                [offset_p1_pos[1], offset_p2_pos[1]],
-                color=colors[i],
-                linewidth=1.5,
-                alpha=0.7,
-                label=f"Offset +{i + 1} ({distance:.2f})",
-            )
-            self.ax.plot(
-                [offset_p1_neg[0], offset_p2_neg[0]],
-                [offset_p1_neg[1], offset_p2_neg[1]],
-                color=colors[i],
-                linewidth=1.5,
-                alpha=0.7,
-                label=f"Offset -{i + 1} ({distance:.2f})",
-            )
+            pos_points = np.array([
+                [offset_p1_pos[0], offset_p1_pos[1], 0.0],
+                [offset_p2_pos[0], offset_p2_pos[1], 0.0],
+            ])
+            neg_points = np.array([
+                [offset_p1_neg[0], offset_p1_neg[1], 0.0],
+                [offset_p2_neg[0], offset_p2_neg[1], 0.0],
+            ])
+
+            self.actors.append(self._line_actor(pos_points, color=colors[i], width=2))
+            self.actors.append(self._line_actor(neg_points, color=colors[i], width=2))
 
             radius = abs(distance)
             cap_start_x, cap_start_y = self._get_end_cap(
@@ -234,53 +171,49 @@ class LineOffsetDemo:
             cap_end_x, cap_end_y = self._get_end_cap(
                 p2, theta - np.pi / 2, theta + np.pi / 2, radius
             )
-            self.ax.plot(
-                cap_start_x,
-                cap_start_y,
-                color=colors[i],
-                linewidth=1.0,
-                alpha=0.7,
-                label="_nolegend_",
-            )
-            self.ax.plot(
-                cap_end_x,
-                cap_end_y,
-                color=colors[i],
-                linewidth=1.0,
-                alpha=0.7,
-                label="_nolegend_",
-            )
 
-        # Setup plot
-        self.ax.set_xlabel("X", fontsize=10)
-        self.ax.set_ylabel("Y", fontsize=10)
-        self.ax.set_title("Line Offset Visualization", fontsize=12, fontweight="bold")
-        self.ax.grid(True, alpha=0.3)
-        self.ax.set_aspect("equal")
-        self.ax.legend(loc="upper right", fontsize=8)
+            cap_start = np.column_stack([cap_start_x, cap_start_y, np.zeros_like(cap_start_x)])
+            cap_end = np.column_stack([cap_end_x, cap_end_y, np.zeros_like(cap_end_x)])
 
-        # Set reasonable limits
-        all_x = [p1[0], p2[0]]
-        all_y = [p1[1], p2[1]]
-        for i in range(self.num_offsets):
-            distance = (i + 1) * self.stepover
-            offset_p1_pos, offset_p2_pos = self._get_offset_line(p1, p2, distance)
-            offset_p1_neg, offset_p2_neg = self._get_offset_line(p1, p2, -distance)
+            self.actors.append(self._line_actor(cap_start, color=colors[i], width=1))
+            self.actors.append(self._line_actor(cap_end, color=colors[i], width=1))
+
             all_x.extend([offset_p1_pos[0], offset_p2_pos[0], offset_p1_neg[0], offset_p2_neg[0]])
             all_y.extend([offset_p1_pos[1], offset_p2_pos[1], offset_p1_neg[1], offset_p2_neg[1]])
 
-        margin = 1.0
-        self.ax.set_xlim(min(all_x) - margin, max(all_x) + margin)
-        self.ax.set_ylim(min(all_y) - margin, max(all_y) + margin)
+        self._update_labels()
 
-        self.canvas.draw()
+        margin = 1.0
+        bounds = (
+            min(all_x) - margin,
+            max(all_x) + margin,
+            min(all_y) - margin,
+            max(all_y) + margin,
+            -1.0,
+            1.0,
+        )
+        self.plotter.reset_camera(bounds=bounds)
+
+    def _gradient_colors(self, count):
+        if count <= 1:
+            return [(0.2, 0.8, 0.2)]
+        colors = []
+        for i in range(count):
+            t = i / (count - 1)
+            r = 0.2 + 0.6 * t
+            g = 0.8 - 0.5 * t
+            b = 0.2
+            colors.append((r, g, b))
+        return colors
+
+    def show(self):
+        self.plotter.show()
+        self.plotter.app.exec_()
 
 
 def main():
-    """Launch the demo."""
-    root = tk.Tk()
-    app = LineOffsetDemo(root)
-    root.mainloop()
+    demo = LineOffsetDemo()
+    demo.show()
 
 
 def _build_vscode_url(path):
@@ -291,17 +224,21 @@ def _build_vscode_url(path):
 
 
 def get_manifest():
-    return {
-        "title": "Line Offset Visualizer",
-        "description": "Create and visualize parallel line offsets.\n\n"
-                       "Features:\n"
-                       "- Drag start and end points interactively\n"
-                       "- Control number of offset lines (1-20)\n"
-                       "- Adjust stepover distance between offsets\n"
-                       "- Real-time visualization with color gradients\n"
-                       "- Useful for CAM toolpath planning",
-        "source_url": _build_vscode_url(__file__),
-    }
+    manifest = dict(DEMO_MANIFEST)
+    manifest["source_url"] = _build_vscode_url(__file__)
+    return manifest
+
+
+DEMO_MANIFEST = {
+    "title": "Line Offset Visualizer",
+    "description": "Create and visualize parallel line offsets.\n\n"
+    "Features:\n"
+    "- Drag start and end points interactively\n"
+    "- Control number of offset lines (1-20)\n"
+    "- Adjust stepover distance between offsets\n"
+    "- Real-time visualization with color gradients\n"
+    "- Useful for CAM toolpath planning",
+}
 
 
 if __name__ == "__main__":

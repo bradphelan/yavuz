@@ -132,13 +132,10 @@ uv venv
 # macOS/Linux:
 source .venv/bin/activate
 
-# 5. Install dependencies
-uv pip install -r requirements.txt
-
-# 6. Install yavuz package
+# 5. Install yavuz package (installs dependencies from pyproject.toml)
 uv pip install -e .
 
-# 7. Run the launcher
+# 6. Run the launcher
 python -m yavuz.launcher
 ```
 
@@ -152,6 +149,12 @@ python -m yavuz.launcher
 ## Performance Guidance
 
 Numpy provides fast vector math. Prefer vectorized operations and avoid manual Python loops when possible.
+
+## Agent Advice
+
+If you use an AI coding assistant:
+- Use the project virtual environment at `.venv/` for running and package inspection.
+- Manage dependencies only in `pyproject.toml` (this project uses `uv`).
 
 ## Deactivating the Virtual Environment
 
