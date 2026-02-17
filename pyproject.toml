@@ -19,7 +19,14 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
 ]
-dependencies = []
+dependencies = [
+    "numpy>=1.24.0",
+    "matplotlib>=3.7.0",
+    "requests>=2.31.0",
+    "Pillow>=10.0.0",
+    "vispy>=0.14.0",
+    "watchdog>=3.0.0",
+]
 
 [project.optional-dependencies]
 dev = [

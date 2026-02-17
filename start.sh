@@ -3,7 +3,7 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# Run setup if needed (or always to validate requirements)
+# Run setup if needed
 if [ ! -x ".venv/bin/python" ]; then
     ./setup.sh
     if [ $? -ne 0 ]; then
@@ -11,5 +11,8 @@ if [ ! -x ".venv/bin/python" ]; then
     fi
 fi
 
-# Launch the app
-.venv/bin/python -m yavuz.launcher
+echo "[*] Launching Yavuz..."
+echo
+
+# Use uv run which auto-syncs dependencies
+uv run python -m yavuz.launcher

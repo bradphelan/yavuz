@@ -9,7 +9,7 @@ echo Yavuz Project Setup
 echo ========================================
 echo.
 
-REM Check if Python is installed (try py first)
+REM Check if Python is installed
 echo [*] Checking for Python...
 py --version >nul 2>&1
 if %errorlevel% equ 0 (
@@ -25,32 +25,26 @@ if %errorlevel% equ 0 (
     ) else (
         echo [ERROR] Python is not installed!
         echo.
-        echo Please install Python from: https://www.python.org/downloads/
-        echo.
         pause
         exit /b 1
     )
 )
 echo.
 
-REM Check if uv is installed
-echo [*] Checking for uv...
-uv --version >nul 2>&1
+REM Install/check uv globally
+echo [*] Installing uv...
+!PYTHON_CMD! -m pip install -U uv >nul 2>&1
 if %errorlevel% neq 0 (
-    echo [*] Installing uv...
-    !PYTHON_CMD! -m pip install uv
-    if %errorlevel% neq 0 (
-        echo [ERROR] Failed to install uv
-        echo.
-        pause
-        exit /b 1
-    )
+    echo [ERROR] Failed to install uv
+    echo.
+    pause
+    exit /b 1
 )
-echo [OK] uv is installed
+echo [OK] uv installed
 echo.
 
-REM Run uv sync to create venv and install everything
-echo [*] Running uv sync...
+REM Use uv to create venv and sync dependencies
+echo [*] Creating virtual environment and syncing dependencies...
 uv sync
 if %errorlevel% neq 0 (
     echo [ERROR] uv sync failed
@@ -58,6 +52,8 @@ if %errorlevel% neq 0 (
     pause
     exit /b 1
 )
+
+echo [OK] Setup complete
 echo.
 
 REM Success
@@ -69,7 +65,6 @@ echo Your project is ready to use!
 echo.
 echo To launch the app:
 echo   start.bat
-echo   or
-echo   python -m yavuz.launcher
 echo.
 pause
+

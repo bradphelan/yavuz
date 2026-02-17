@@ -8,6 +8,35 @@ from tkinter import ttk, scrolledtext
 import subprocess
 import sys
 from pathlib import Path
+import threading
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+
+
+class DemoFolderWatcher(FileSystemEventHandler):
+    """Watch the demos folder for changes and auto-reload when detected."""
+
+    def __init__(self, launcher):
+        self.launcher = launcher
+        self.debounce_timer = None
+
+    def on_any_event(self, event):
+        """Handle file system events with debouncing."""
+        # Ignore hidden files and cache directories
+        if event.src_path.endswith(('.pyc', '.pyo', '__pycache__', '.git')):
+            return
+
+        # Debounce - wait a bit for multiple events to settle
+        if self.debounce_timer:
+            self.debounce_timer.cancel()
+
+        self.debounce_timer = threading.Timer(0.5, self.trigger_reload)
+        self.debounce_timer.daemon = True
+        self.debounce_timer.start()
+
+    def trigger_reload(self):
+        """Trigger a reload of the demo list."""
+        self.launcher.refresh_demos()
 
 
 class DemoLauncher:
@@ -117,6 +146,13 @@ class DemoLauncher:
         # Demo definitions
         self.demos = self.discover_demos()
         self.populate_demo_list()
+
+        # Setup file watcher for demos folder
+        self.observer = None
+        self.start_demos_watcher()
+
+        # Handle window close
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def discover_demos(self):
         """Discover all available demos in the demos directory."""
@@ -262,6 +298,29 @@ class DemoLauncher:
         self.description_text.delete(1.0, tk.END)
         self.description_text.config(state=tk.DISABLED)
         self.run_button.config(state=tk.DISABLED)
+        self.status_var.set(f"Demo list updated. Found {len(self.demos)} demo(s).")
+
+    def start_demos_watcher(self):
+        """Start watching the demos folder for changes."""
+        try:
+            demos_dir = Path(__file__).resolve().parents[2] / "demos"
+            if demos_dir.exists():
+                self.observer = Observer()
+                self.observer.schedule(
+                    DemoFolderWatcher(self),
+                    str(demos_dir),
+                    recursive=True
+                )
+                self.observer.start()
+        except Exception as e:
+            print(f"Warning: Could not start file watcher: {e}")
+
+    def on_close(self):
+        """Clean up and close the application."""
+        if self.observer:
+            self.observer.stop()
+            self.observer.join()
+        self.root.destroy()
 
 
 def main():

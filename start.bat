@@ -30,5 +30,5 @@ if not exist ".venv\Scripts\python.exe" (
 echo [*] Launching Yavuz...
 echo.
 
-.venv\Scripts\python.exe -m yavuz.launcher
+uv run python -m yavuz.launcher
 
