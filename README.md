@@ -66,7 +66,11 @@ source .venv/bin/activate  # Linux/Mac
 Launch the demo selector GUI:
 
 ```bash
-python launcher.py
+# Windows
+start.bat
+
+# Linux/Mac
+./start.sh
 ```
 
 This opens an interactive interface where you can browse and launch any available demo with a single click.
@@ -131,7 +135,11 @@ Features:
 
 ### Using the Launcher (Recommended)
 ```bash
-python launcher.py
+# Windows
+start.bat
+
+# Linux/Mac
+./start.sh
 ```
 Select a demo from the list and click "Run Selected Demo".
 
@@ -160,7 +168,7 @@ To add a new demo to the project:
    # demos/my_new_demo/my_new_demo.py
    ```
 
-3. **Update the launcher** by adding your demo info to the `demo_info` dictionary in `launcher.py`:
+3. **Update the launcher** by adding your demo info to the `demo_info` dictionary in `src/yavuz/launcher.py`:
    ```python
    "my_new_demo": {
        "name": "My New Demo",
@@ -175,7 +183,9 @@ To add a new demo to the project:
 
 ```
 yavuz/
-├── launcher.py         # Main demo launcher GUI
+├── start.bat           # Windows start script
+├── start.sh            # Linux/Mac start script
+├── start.bash          # Alternate bash entry point
 ├── demos/              # All demos, each in own subfolder
 │   ├── surface_plot/
 │   │   └── surface_plot_interactive.py
@@ -189,6 +199,7 @@ yavuz/
 │       └── numerical_methods.py
 ├── src/
 │   └── yavuz/          # Main package
+│       └── launcher.py # Main demo launcher GUI
 ├── tests/              # Test suite
 ├── requirements.txt    # Production dependencies
 └── pyproject.toml      # Project configuration

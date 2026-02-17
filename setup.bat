@@ -51,9 +51,9 @@ echo To activate the virtual environment, run:
 echo     .venv\Scripts\activate.bat
 echo.
 echo To launch the demo selector, run:
-echo     python launcher.py
+echo     start.bat
 echo.
 echo Or run the launcher directly:
-echo     .venv\Scripts\python.exe launcher.py
+echo     .venv\Scripts\python.exe -m yavuz.launcher
 echo.
 pause

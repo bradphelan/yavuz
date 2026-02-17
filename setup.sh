@@ -40,5 +40,8 @@ echo "To activate the virtual environment, run:"
 echo "    source .venv/bin/activate"
 echo
 echo "To launch the demo selector, run:"
-echo "    python launcher.py"
+echo "    ./start.sh"
+echo
+echo "Or run the launcher directly:"
+echo "    .venv/bin/python -m yavuz.launcher"
 echo

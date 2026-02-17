@@ -121,7 +121,7 @@ class DemoLauncher:
     def discover_demos(self):
         """Discover all available demos in the demos directory."""
         demos = []
-        demos_dir = Path(__file__).parent / "demos"
+        demos_dir = Path(__file__).resolve().parents[2] / "demos"
 
         if not demos_dir.exists():
             return []
