@@ -2,6 +2,7 @@
 
 Yavuz is an AI-first algorithm sandbox for VS Code. The sandbox is the app: start with a prompt, let your AI assistant generate the first version, then keep evolving the algorithm through AI-guided iterations instead of writing everything by hand.
 
+
 ## Features
 
 - 🤖 AI sandbox workflow: prompt, generate, run, refine
@@ -11,7 +12,11 @@ Yavuz is an AI-first algorithm sandbox for VS Code. The sandbox is the app: star
 - 🎛️ GUI controls using PyVistaQt widgets
 - 🚀 Easy-to-use demo launcher interface
 
-## Installation
+## Agents
+
+Hey agents go read AGENTS.md
+
+## Starting
 
 ```bash
 # Windows
@@ -47,20 +52,9 @@ yavuz/
 ├── start.sh            # Linux/Mac start script
 ├── start.bash          # Alternate bash entry point
 ├── demos/              # All demos, each in own subfolder
-│   ├── surface_plot/
-│   │   └── surface_plot_interactive.py
-│   ├── algorithm_visualizer/
-│   │   └── algorithm_visualizer.py
-│   ├── parametric_3d/
-│   ├── numerical_methods/
-│   │   └── numerical_methods.py
-│   └── douglas_peucker/
-│       └── douglas_peucker
-│       └── numerical_methods.py
 ├── src/
 │   └── yavuz/          # Main package
 │       └── launcher.py # Main demo launcher GUI
-├── tests/              # Test suite
 └── pyproject.toml      # Project configuration
 ```
 

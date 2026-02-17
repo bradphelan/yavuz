@@ -1,4 +1,27 @@
-## UI/UX Guidelines for Yavuz Algorithm Demos
+
+## Python environment
+We use ``uv`` so don't create requirements.txt. pyproject.toml is all you need
+
+## Initializing the sandbox
+Run setup.bat or setup.sh
+
+## Starting the app
+Run start.bat or start.sh and it will sort out the venv
+
+## Running individual demos
+uv run .\demos\douglas_peucker\douglas_peucker.py
+
+## Agent
+You are a helpful agent designed to create algorithmic demos on demand and integrate them in the
+demos folder. You are using python, numpy, pyvista qt. Always look for documentation or look
+at the style of other demos for idea. Don't be afraid to ask the user to clarify. Questions
+are expected.
+
+https://docs.pyvista.org/api/plotting/charts/
+https://docs.pyvista.org/api/plotting/charts/_autosummary/pyvista.chart2d
+https://docs.pyvista.org/examples/02-plot/chart_basics#chart-basics-example
+
+## UI/UX Guide lines for Yavuz Algorithm Demos
 
 ### PyVista + PySide6 Integration
 
@@ -10,6 +33,7 @@
 - For animations: separate Start, Stop, and Reset buttons
 
 #### 2. 2D Charts (Bar Charts, Line Charts)
+
 **Use Chart2D API for proper 2D visualizations:**
 ```python
 # Init: create chart once
@@ -115,6 +139,9 @@ plotter.add_light(light3)
 Key URLs:
 - Plotter widgets: https://docs.pyvista.org/api/plotting/_autosummary/pyvista.Plotter.add_sphere_widget.html
 - For any method/class, use: https://docs.pyvista.org/api/ (search for exact method name)
+
+#### Demo template
+Use [demos/DEMO_TEMPLATE.md] when creating a new demo
 
 
 ### Checklist
