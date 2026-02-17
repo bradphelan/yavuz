@@ -3,6 +3,8 @@ Douglas-Peucker Algorithm Visualization
 Demonstrates line simplification with noise reduction using the Ramer-Douglas-Peucker algorithm.
 """
 
+from pathlib import Path
+from urllib.parse import quote
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider, Button
@@ -227,6 +229,28 @@ def main():
     """Run the Douglas-Peucker demo."""
     demo = DouglasPeuckerDemo()
     demo.show()
+
+
+def _build_vscode_url(path):
+    posix_path = Path(path).resolve().as_posix()
+    if not posix_path.startswith("/"):
+        posix_path = f"/{posix_path}"
+    return f"vscode://file{quote(posix_path, safe='/:')}"
+
+
+def get_manifest():
+    return {
+        "title": "Douglas-Peucker Line Simplification",
+        "description": "Visualize noise reduction using the Ramer-Douglas-Peucker algorithm.\n\n"
+                       "Features:\n"
+                       "- Clean sine wave generation\n"
+                       "- Adjustable noise amplitude\n"
+                       "- Interactive tolerance control for simplification\n"
+                       "- Real-time comparison of noisy vs simplified signals\n"
+                       "- Point reduction statistics and error metrics\n"
+                       "- Configurable signal frequency",
+        "source_url": _build_vscode_url(__file__),
+    }
 
 
 if __name__ == "__main__":

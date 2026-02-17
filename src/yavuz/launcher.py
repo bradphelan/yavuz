@@ -7,10 +7,12 @@ import tkinter as tk
 from tkinter import ttk, scrolledtext
 import subprocess
 import sys
-from pathlib import Path
 import threading
-from watchdog.observers import Observer
+import webbrowser
+from importlib import util as importlib_util
+from pathlib import Path
 from watchdog.events import FileSystemEventHandler
+from watchdog.observers import Observer
 
 
 class DemoFolderWatcher(FileSystemEventHandler):
@@ -120,11 +122,13 @@ class DemoLauncher:
         )
         self.run_button.grid(row=0, column=0, padx=5)
 
-        ttk.Button(
+        self.open_source_button = ttk.Button(
             button_frame,
-            text="🔄 Refresh List",
-            command=self.refresh_demos
-        ).grid(row=0, column=1, padx=5)
+            text="Open Source",
+            command=self.open_selected_source,
+            state=tk.DISABLED
+        )
+        self.open_source_button.grid(row=0, column=1, padx=5)
 
         ttk.Button(
             button_frame,
@@ -162,80 +166,57 @@ class DemoLauncher:
         if not demos_dir.exists():
             return []
 
-        # Demo metadata
-        demo_info = {
-            "surface_plot": {
-                "name": "Interactive 3D Surface Plot",
-                "description": "Real-time 3D surface visualization with adjustable parameters.\n\n"
-                             "Features:\n"
-                             "• Interactive 3D surface rendering\n"
-                             "• Frequency, amplitude, and phase controls\n"
-                             "• Slider-based parameter adjustment\n"
-                             "• Mathematical function: Z = A*sin(f*√(X²+Y²) + φ)",
-                "script": "surface_plot_interactive.py"
-            },
-            "algorithm_visualizer": {
-                "name": "Sorting Algorithm Visualizer",
-                "description": "Visualize classic sorting algorithms in real-time.\n\n"
-                             "Features:\n"
-                             "• Bubble Sort, Selection Sort, Insertion Sort\n"
-                             "• Adjustable array size (10-200 elements)\n"
-                             "• Speed control for animation\n"
-                             "• Color-coded comparisons\n"
-                             "• Step-by-step visualization",
-                "script": "algorithm_visualizer.py"
-            },
-            "parametric_3d": {
-                "name": "Parametric 3D Curves",
-                "description": "Explore beautiful 3D mathematical curves.\n\n"
-                             "Features:\n"
-                             "• Multiple curve types: Helix, Torus Knot, Lissajous, Spiral\n"
-                             "• Three adjustable parameters per curve\n"
-                             "• Color gradients based on position\n"
-                             "• Configurable point density\n"
-                             "• Interactive 3D rotation",
-                "script": "parametric_3d.py"
-            },
-            "numerical_methods": {
-                "name": "Numerical Methods Demonstration",
-                "description": "Compare numerical algorithms with analytical solutions.\n\n"
-                             "Features:\n"
-                             "• Numerical integration (Trapezoidal & Simpson's rule)\n"
-                             "• Numerical differentiation\n"
-                             "• Side-by-side comparison with exact solutions\n"
-                             "• Adjustable sample points\n"
-                             "• Interactive function parameters",
-                "script": "numerical_methods.py"
-            },
-            "douglas_peucker": {
-                "name": "Douglas-Peucker Line Simplification",
-                "description": "Visualize noise reduction using the Ramer-Douglas-Peucker algorithm.\n\n"
-                             "Features:\n"
-                             "• Clean sine wave generation\n"
-                             "• Adjustable noise amplitude\n"
-                             "• Interactive tolerance control for simplification\n"
-                             "• Real-time comparison of noisy vs simplified signals\n"
-                             "• Point reduction statistics and error metrics\n"
-                             "• Configurable signal frequency",
-                "script": "douglas_peucker.py"
-            }
-        }
+        for script_path in sorted(demos_dir.rglob("*.py")):
+            if script_path.name == "__init__.py":
+                continue
+            if "__pycache__" in script_path.parts:
+                continue
 
-        # Scan demos directory
-        for demo_folder in sorted(demos_dir.iterdir()):
-            if demo_folder.is_dir() and demo_folder.name in demo_info:
-                info = demo_info[demo_folder.name]
-                script_path = demo_folder / info["script"]
+            manifest = self.load_manifest(script_path)
+            if not manifest:
+                continue
 
-                if script_path.exists():
-                    demos.append({
-                        "id": demo_folder.name,
-                        "name": info["name"],
-                        "description": info["description"],
-                        "path": script_path
-                    })
+            demos.append({
+                "id": f"{script_path.parent.name}/{script_path.stem}",
+                "name": manifest["title"],
+                "description": manifest["description"],
+                "source_url": manifest["source_url"],
+                "path": script_path
+            })
 
+        demos.sort(key=lambda demo: demo["name"].lower())
         return demos
+
+    def load_manifest(self, script_path):
+        """Load a demo manifest from a script file."""
+        module_name = f"yavuz_demo_{script_path.parent.name}_{script_path.stem}"
+        spec = importlib_util.spec_from_file_location(module_name, script_path)
+        if not spec or not spec.loader:
+            return None
+
+        module = importlib_util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(module)
+        except Exception:
+            return None
+
+        get_manifest = getattr(module, "get_manifest", None)
+        if not callable(get_manifest):
+            return None
+
+        try:
+            manifest = get_manifest()
+        except Exception:
+            return None
+
+        if not isinstance(manifest, dict):
+            return None
+
+        required_keys = {"title", "description", "source_url"}
+        if not required_keys.issubset(manifest.keys()):
+            return None
+
+        return manifest
 
     def populate_demo_list(self):
         """Populate the listbox with available demos."""
@@ -264,11 +245,13 @@ class DemoLauncher:
             # Update description
             self.description_text.config(state=tk.NORMAL)
             self.description_text.delete(1.0, tk.END)
-            self.description_text.insert(1.0, demo["description"])
+            description = f"{demo['description']}\n\nSource: {demo['source_url']}"
+            self.description_text.insert(1.0, description)
             self.description_text.config(state=tk.DISABLED)
 
             # Enable run button
             self.run_button.config(state=tk.NORMAL)
+            self.open_source_button.config(state=tk.NORMAL)
 
             self.status_var.set(f"Selected: {demo['name']}")
 
@@ -290,6 +273,21 @@ class DemoLauncher:
             except Exception as e:
                 self.status_var.set(f"✗ Error launching demo: {str(e)}")
 
+    def open_selected_source(self):
+        """Open the selected demo source in VS Code."""
+        selection = self.demo_listbox.curselection()
+        if not selection:
+            return
+
+        idx = selection[0]
+        if idx < len(self.demos):
+            demo = self.demos[idx]
+            try:
+                webbrowser.open(demo["source_url"])
+                self.status_var.set(f"Opened source for: {demo['name']}")
+            except Exception as e:
+                self.status_var.set(f"✗ Error opening source: {str(e)}")
+
     def refresh_demos(self):
         """Refresh the demo list."""
         self.demos = self.discover_demos()
@@ -298,6 +296,7 @@ class DemoLauncher:
         self.description_text.delete(1.0, tk.END)
         self.description_text.config(state=tk.DISABLED)
         self.run_button.config(state=tk.DISABLED)
+        self.open_source_button.config(state=tk.DISABLED)
         self.status_var.set(f"Demo list updated. Found {len(self.demos)} demo(s).")
 
     def start_demos_watcher(self):

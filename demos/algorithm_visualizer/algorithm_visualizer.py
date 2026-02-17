@@ -6,6 +6,8 @@ Demonstrates sorting algorithms with adjustable speed and array size.
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider, Button, RadioButtons
+from pathlib import Path
+from urllib.parse import quote
 import time
 
 
@@ -179,6 +181,27 @@ def main():
     """Run the algorithm visualizer."""
     visualizer = AlgorithmVisualizer()
     visualizer.show()
+
+
+def _build_vscode_url(path):
+    posix_path = Path(path).resolve().as_posix()
+    if not posix_path.startswith("/"):
+        posix_path = f"/{posix_path}"
+    return f"vscode://file{quote(posix_path, safe='/:')}"
+
+
+def get_manifest():
+    return {
+        "title": "Sorting Algorithm Visualizer",
+        "description": "Visualize classic sorting algorithms in real-time.\n\n"
+                       "Features:\n"
+                       "- Bubble Sort, Selection Sort, Insertion Sort\n"
+                       "- Adjustable array size (10-200 elements)\n"
+                       "- Speed control for animation\n"
+                       "- Color-coded comparisons\n"
+                       "- Step-by-step visualization",
+        "source_url": _build_vscode_url(__file__),
+    }
 
 
 if __name__ == "__main__":

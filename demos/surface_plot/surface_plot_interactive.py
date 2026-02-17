@@ -6,6 +6,8 @@ Demonstrates numpy computations and matplotlib 3D plotting with GUI widgets.
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider, TextBox
+from pathlib import Path
+from urllib.parse import quote
 from mpl_toolkits.mplot3d import Axes3D
 
 
@@ -107,6 +109,26 @@ def main():
     """Run the interactive surface plot."""
     app = InteractiveSurface()
     app.show()
+
+
+def _build_vscode_url(path):
+    posix_path = Path(path).resolve().as_posix()
+    if not posix_path.startswith("/"):
+        posix_path = f"/{posix_path}"
+    return f"vscode://file{quote(posix_path, safe='/:')}"
+
+
+def get_manifest():
+    return {
+        "title": "Interactive 3D Surface Plot",
+        "description": "Real-time 3D surface visualization with adjustable parameters.\n\n"
+                       "Features:\n"
+                       "- Interactive 3D surface rendering\n"
+                       "- Frequency, amplitude, and phase controls\n"
+                       "- Slider-based parameter adjustment\n"
+                       "- Mathematical function: Z = A*sin(f*sqrt(X^2+Y^2) + phi)",
+        "source_url": _build_vscode_url(__file__),
+    }
 
 
 if __name__ == "__main__":

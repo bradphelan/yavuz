@@ -6,6 +6,8 @@ Demonstrates various 3D mathematical curves with adjustable parameters.
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider, RadioButtons, TextBox
+from pathlib import Path
+from urllib.parse import quote
 from mpl_toolkits.mplot3d import Axes3D
 
 
@@ -171,6 +173,27 @@ def main():
     """Run the parametric 3D visualizer."""
     visualizer = Parametric3DVisualizer()
     visualizer.show()
+
+
+def _build_vscode_url(path):
+    posix_path = Path(path).resolve().as_posix()
+    if not posix_path.startswith("/"):
+        posix_path = f"/{posix_path}"
+    return f"vscode://file{quote(posix_path, safe='/:')}"
+
+
+def get_manifest():
+    return {
+        "title": "Parametric 3D Curves",
+        "description": "Explore 3D mathematical curves with interactive parameters.\n\n"
+                       "Features:\n"
+                       "- Curve types: Helix, Torus Knot, Lissajous, Spiral\n"
+                       "- Three adjustable parameters per curve\n"
+                       "- Color gradients based on position\n"
+                       "- Configurable point density\n"
+                       "- Interactive 3D rotation",
+        "source_url": _build_vscode_url(__file__),
+    }
 
 
 if __name__ == "__main__":

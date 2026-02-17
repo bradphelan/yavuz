@@ -5,6 +5,8 @@ Demonstrates various numerical algorithms like integration, differentiation, and
 
 import numpy as np
 import matplotlib.pyplot as plt
+from pathlib import Path
+from urllib.parse import quote
 from matplotlib.widgets import Slider, RadioButtons, Button, TextBox
 
 
@@ -197,6 +199,27 @@ def main():
     """Run the numerical methods demo."""
     demo = NumericalMethodsDemo()
     demo.show()
+
+
+def _build_vscode_url(path):
+    posix_path = Path(path).resolve().as_posix()
+    if not posix_path.startswith("/"):
+        posix_path = f"/{posix_path}"
+    return f"vscode://file{quote(posix_path, safe='/:')}"
+
+
+def get_manifest():
+    return {
+        "title": "Numerical Methods Demonstration",
+        "description": "Compare numerical algorithms with analytical solutions.\n\n"
+                       "Features:\n"
+                       "- Numerical integration (Trapezoidal and Simpson)\n"
+                       "- Numerical differentiation\n"
+                       "- Side-by-side comparison with exact solutions\n"
+                       "- Adjustable sample points\n"
+                       "- Interactive function parameters",
+        "source_url": _build_vscode_url(__file__),
+    }
 
 
 if __name__ == "__main__":
