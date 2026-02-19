@@ -421,6 +421,7 @@ class TriDexelDemo:
         # Pre-computed cache: list of (TriDexelGrid snapshots) at CACHE_STEPS
         # evenly-spaced positions along the toolpath.
         self._cache: list[TriDexelGrid] | None = None
+        self._cache_indices: np.ndarray | None = None  # toolpath index per cache slot
         self._cache_toolpath_hash: int | None = None   # detect stale cache
 
         # Actors
@@ -459,7 +460,7 @@ class TriDexelDemo:
             self.toolpath = contour_path(b, z)
         elif name == "Cross-hatch":
             self.toolpath = cross_hatch_path(b, z, self.step_over)
-        self._cache = None   # invalidate cache on new toolpath
+        self._cache = None; self._cache_indices = None   # invalidate cache on new toolpath
 
     # -----------------------------------------------------------------------
     # Controls
@@ -852,6 +853,7 @@ class TriDexelDemo:
         # Fresh grid; accumulate cuts progressively
         g = TriDexelGrid(WORKPIECE_BOUNDS, self.resolution)
         self._cache = []
+        self._cache_indices = cache_indices
         prev_i = 0
         for snap_i in cache_indices:
             for i in range(prev_i, snap_i + 1):
@@ -881,15 +883,30 @@ class TriDexelDemo:
 
     def _on_progress_changed(self, value: int):
         self.sweep_progress = value / 1000.0
-        self._update_tool_position()
 
         # If cache is available, look up and display the nearest snapshot
+        # and position the tool at the exact toolpath index for that snapshot
         if self._cache is not None:
             snap_idx = int(round(self.sweep_progress * (len(self._cache) - 1)))
             snap_idx = max(0, min(snap_idx, len(self._cache) - 1))
+            # Position tool at the toolpath index this cache slot was built at
+            tp_idx = int(self._cache_indices[snap_idx])
+            if len(self.toolpath):
+                tp_idx = min(tp_idx, len(self.toolpath) - 1)
+                pos = self.toolpath[tp_idx]
+                new_sphere = pv.Sphere(
+                    radius=self.tool_radius, center=pos,
+                    theta_resolution=24, phi_resolution=24)
+                self.tool_mesh.copy_from(new_sphere)
+                self.tool_mesh.Modified()
+                self.tool_actor.mapper.SetInputData(self.tool_mesh)
+                self.tool_actor.mapper.Update()
+                self.tool_actor.SetVisibility(self.show_tool)
             cached_grid = self._cache[snap_idx]
             self._rebuild_workpiece(cached_grid)
             self._refresh_visible_dexels(cached_grid)
+        else:
+            self._update_tool_position()
 
     def _on_radius_changed(self, value: int):
         self.tool_radius = value / 10.0
@@ -918,7 +935,7 @@ class TriDexelDemo:
         )
         # Rebuild grid at new resolution, invalidate cache
         self.grid = TriDexelGrid(WORKPIECE_BOUNDS, self.resolution)
-        self._cache = None
+        self._cache = None; self._cache_indices = None
         self._rebuild_workpiece()
         self._refresh_visible_dexels()
         self.status_label.setText(
@@ -930,7 +947,7 @@ class TriDexelDemo:
 
     def _on_reset(self):
         self.grid = TriDexelGrid(WORKPIECE_BOUNDS, self.resolution)
-        self._cache = None
+        self._cache = None; self._cache_indices = None
         self._rebuild_workpiece()
         self._refresh_visible_dexels()
         self.status_label.setText("Workpiece reset")
