@@ -351,13 +351,13 @@ def cross_hatch_path(bounds, z_depth, step_over, n_per_pass=40):
 
 WORKPIECE_BOUNDS = (-5.0, 5.0, -5.0, 5.0, -3.0, 3.0)
 DEFAULT_RESOLUTION = 30
-DEFAULT_TOOL_RADIUS = 1.0
-DEFAULT_Z_DEPTH = 1.5
+DEFAULT_TOOL_RADIUS = 1.5
+DEFAULT_Z_DEPTH = 1.0
 CACHE_STEPS = 80       # number of snapshots stored when pre-computing
 
-# Colours
-COL_UNCUT  = "#c8a882"   # warm beige — uncut stock
-COL_CUT    = "#5b9bbf"   # steel blue — machined surface
+# Colours / materials
+COL_UNCUT  = "#b0b0b0"   # brushed aluminium grey — uncut stock
+COL_CUT    = "#7ec8e3"   # light machined-steel blue — freshly cut
 COL_TOOL   = "#e88d8d"
 COL_PATH   = "#888888"
 
@@ -374,26 +374,28 @@ class TriDexelDemo:
         )
         self.plotter.set_background("white")
 
-        # ---- lighting: 6 lights from all axis directions, balanced ----
-        # Each at intensity 0.30 so all six sum to ~1.8 — bright but not blown out.
-        # Using scene lights (not camera lights) so they stay fixed in world space
-        # and illuminate inside cavities regardless of view angle.
+        # ---- lighting for PBR metallic surfaces ----
+        # Metallic PBR reflects light colour, so varied-colour directional
+        # lights create the tinted reflections that read as brushed metal.
+        # Non-positional (directional) lights avoid bright spot circles.
         self.plotter.remove_all_lights()
-        D = 12.0   # distance from origin
-        I = 0.32   # per-light intensity
-        light_positions = [
-            ( D,  0,  0), (-D,  0,  0),
-            ( 0,  D,  0), ( 0, -D,  0),
-            ( 0,  0,  D), ( 0,  0, -D),
+        light_cfgs = [
+            # (position, color, intensity) — warm key, cool fill, neutral rim
+            (( 8,  5, 10), "#fffaf0", 0.9),   # warm white key (top-right-front)
+            ((-6, -4,  8), "#c0d8f0", 0.5),   # cool blue fill (top-left-back)
+            (( 0,  8, -3), "#f0e8d0", 0.4),   # warm amber side
+            ((-8,  0,  2), "#d0e0f0", 0.35),  # cool left
+            (( 3, -6, -5), "#e8e0f0", 0.25),  # lavender under-fill
+            (( 0,  0, 12), "#ffffff", 0.3),    # neutral top for cavity fill
         ]
-        for pos in light_positions:
+        for pos, color, intensity in light_cfgs:
             lt = pv.Light(
                 position=pos,
                 focal_point=(0, 0, 0),
-                color="white",
-                intensity=I,
+                color=color,
+                intensity=intensity,
             )
-            lt.positional = True
+            lt.positional = False  # directional — no spot circles
             self.plotter.add_light(lt)
 
         # ---- state ----
@@ -612,19 +614,21 @@ class TriDexelDemo:
         self.uncut_actor = self.plotter.add_mesh(
             self.uncut_mesh,
             color=COL_UNCUT,
+            pbr=True,
+            metallic=0.8,
+            roughness=0.45,
             smooth_shading=True,
             opacity=1.0,
-            specular=0.3,
-            specular_power=20,
         )
         self.cut_mesh = placeholder.copy()
         self.cut_actor = self.plotter.add_mesh(
             self.cut_mesh,
             color=COL_CUT,
+            pbr=True,
+            metallic=0.2,
+            roughness=0.7,
             smooth_shading=True,
             opacity=1.0,
-            specular=0.6,
-            specular_power=60,
         )
 
         # Tool
@@ -690,6 +694,21 @@ class TriDexelDemo:
 
         uncut_surf = _extract(on_boundary)
         cut_surf = _extract(~on_boundary)
+
+        # Compute normals with feature angle: smooth where triangles are
+        # nearly coplanar, sharp edges where the dihedral angle exceeds
+        # the threshold.
+        feature_angle = 30.0
+        if uncut_surf.n_points > 0:
+            uncut_surf = uncut_surf.compute_normals(
+                cell_normals=False, point_normals=True,
+                feature_angle=feature_angle, split_vertices=True,
+            )
+        if cut_surf.n_points > 0:
+            cut_surf = cut_surf.compute_normals(
+                cell_normals=False, point_normals=True,
+                feature_angle=feature_angle, split_vertices=True,
+            )
 
         def _push(mesh, actor, surf):
             if surf.n_points == 0:
