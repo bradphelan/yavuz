@@ -4,9 +4,11 @@ Demonstrates the tri-dexel volumetric representation used in CNC simulation.
 A sphere tool is swept along predefined toolpaths, subtracting material from a
 workpiece represented as three orthogonal sets of dexel ray segments.
 
-Surface reconstruction uses pyvista contour_labels (vtkSurfaceNets3D) so that
-ALL faces — top, walls, and cut surfaces — are generated correctly with two
-distinct colours: uncut stock and freshly machined surface.
+Surface reconstruction computes a floating-point signed distance field from
+all three dexel axes, then extracts the isosurface via PyVista's contour
+(flying edges).  The float values enable sub-voxel interpolation so the mesh
+passes through the exact dexel endpoint positions.  Faces are classified as
+uncut stock or machined surface for two-colour rendering.
 """
 
 from __future__ import annotations
@@ -132,25 +134,18 @@ class TriDexelGrid:
                         pts.append([[u, v, seg[0]], [u, v, seg[1]]])
         return np.array(pts) if pts else np.empty((0, 2, 3))
 
-    # ----- label field for contour_labels -----
+    # ----- signed distance field for isosurface extraction -----
 
-    def to_label_field(self, grid_res: int = 60) -> tuple[pv.ImageData, str]:
-        """Build an integer label ImageData for use with contour_labels.
+    def to_distance_field(self, grid_res: int) -> pv.ImageData:
+        """Build a float signed distance field from all three dexel axes.
 
-        Labels:
-          0 = air / background
-          1 = uncut solid stock
-          2 = cut / machined surface (exposed by tool)
+        For each voxel, compute the signed distance to the nearest segment
+        boundary along each axis (positive = inside material), then take
+        the minimum across axes (tri-dexel intersection).
 
-        We use Z-dexels to determine which voxels are solid.
-        A voxel is labeled 2 (cut-exposed) if it is solid AND any of its
-        six face-neighbours is air — i.e. it is on the machined surface.
-        Internal solid voxels that were never touched get label 1.
-
-        contour_labels will then generate:
-          boundary_labels [1, 0] → uncut outer face  → colour A
-          boundary_labels [2, 0] → machined face      → colour B
-          boundary_labels [1, 2] → interior interface (ignored / hidden)
+        The resulting field can be passed to ``contour(isosurfaces=[0.0])``
+        which linearly interpolates between voxel values to place the
+        surface at the exact dexel endpoint positions.
         """
         xmin, xmax, ymin, ymax, zmin, zmax = self.bounds
         pad = 0.02
@@ -165,92 +160,103 @@ class TriDexelGrid:
             origin=(xs[0], ys[0], zs[0]),
         )
 
-        # --- occupancy pass (Z-dexels) ---
-        x_ticks = self.x_ticks_z
-        y_ticks = self.y_ticks_z
-        nu = len(x_ticks)
-        nv = len(y_ticks)
+        far_outside = -1e6
 
-        # Map grid positions to nearest dexel index
-        xi_map = np.clip(
-            np.searchsorted(x_ticks, xs) - 1, 0, nu - 2
-        )
-        yi_map = np.clip(
-            np.searchsorted(y_ticks, ys) - 1, 0, nv - 2
-        )
+        # --- Z-axis: segments along Z, grid over (X, Y) ---
+        sd_z = np.full((grid_res, grid_res, grid_res), far_outside)
+        nu_z, nv_z = len(self.x_ticks_z), len(self.y_ticks_z)
+        gx_z = _build_reverse_map(
+            np.clip(np.searchsorted(self.x_ticks_z, xs) - 1, 0, nu_z - 2), nu_z)
+        gy_z = _build_reverse_map(
+            np.clip(np.searchsorted(self.y_ticks_z, ys) - 1, 0, nv_z - 2), nv_z)
+        for iv, gy_arr in gy_z.items():
+            for iu, gx_arr in gx_z.items():
+                sd_col = _column_signed_distance(
+                    self.z_segs[iv * nu_z + iu], zs)
+                sd_z[np.ix_(gx_arr, gy_arr)] = sd_col  # broadcast (gx, gy, grid_res)
 
-        # Build reverse maps: dexel index → array of grid indices
-        gx_for_dexel: dict[int, np.ndarray] = {}
-        for dx in range(nu):
-            mask = xi_map == dx
-            if mask.any():
-                gx_for_dexel[dx] = np.where(mask)[0]
-        gy_for_dexel: dict[int, np.ndarray] = {}
-        for dy in range(nv):
-            mask = yi_map == dy
-            if mask.any():
-                gy_for_dexel[dy] = np.where(mask)[0]
+        # --- X-axis: segments along X, grid over (Y, Z) ---
+        sd_x = np.full((grid_res, grid_res, grid_res), far_outside)
+        nu_x, nv_x = len(self.y_ticks_x), len(self.z_ticks_x)
+        gy_x = _build_reverse_map(
+            np.clip(np.searchsorted(self.y_ticks_x, ys) - 1, 0, nu_x - 2), nu_x)
+        gz_x = _build_reverse_map(
+            np.clip(np.searchsorted(self.z_ticks_x, zs) - 1, 0, nv_x - 2), nv_x)
+        for iv, gz_arr in gz_x.items():
+            for iu, gy_arr in gy_x.items():
+                sd_col = _column_signed_distance(
+                    self.x_segs[iv * nu_x + iu], xs)
+                # sd_col along X → axis 0 of (grid_res, grid_res, grid_res)
+                sd_x[np.ix_(np.arange(grid_res), gy_arr, gz_arr)] = \
+                    sd_col[:, np.newaxis, np.newaxis]
 
-        # Iterate dexel columns (resolution²), build z-mask, broadcast to grid
-        solid = np.zeros((grid_res, grid_res, grid_res), dtype=bool)
-        for iy_near, gy_arr in gy_for_dexel.items():
-            for ix_near, gx_arr in gx_for_dexel.items():
-                seg_list = self.z_segs[iy_near * nu + ix_near]
-                if not seg_list:
-                    continue
-                # Batch searchsorted for all segments in this column
-                seg_arr = np.asarray(seg_list)          # (n_segs, 2)
-                lo_iz = np.searchsorted(zs, seg_arr[:, 0])
-                hi_iz = np.searchsorted(zs, seg_arr[:, 1])
-                # Build z-mask for this column
-                z_mask = np.zeros(grid_res, dtype=bool)
-                for s in range(len(seg_arr)):
-                    z_mask[lo_iz[s]:hi_iz[s]] = True
-                # Broadcast to all grid cells that map to this dexel column
-                solid[np.ix_(gx_arr, gy_arr)] |= z_mask
+        # --- Y-axis: segments along Y, grid over (X, Z) ---
+        sd_y = np.full((grid_res, grid_res, grid_res), far_outside)
+        nu_y, nv_y = len(self.x_ticks_y), len(self.z_ticks_y)
+        gx_y = _build_reverse_map(
+            np.clip(np.searchsorted(self.x_ticks_y, xs) - 1, 0, nu_y - 2), nu_y)
+        gz_y = _build_reverse_map(
+            np.clip(np.searchsorted(self.z_ticks_y, zs) - 1, 0, nv_y - 2), nv_y)
+        for iv, gz_arr in gz_y.items():
+            for iu, gx_arr in gx_y.items():
+                sd_col = _column_signed_distance(
+                    self.y_segs[iv * nu_y + iu], ys)
+                # sd_col along Y → axis 1 of (grid_res, grid_res, grid_res)
+                sd_y[np.ix_(gx_arr, np.arange(grid_res), gz_arr)] = \
+                    sd_col[np.newaxis, :, np.newaxis]
 
-        # --- label assignment ---
-        # Start: all solid = label 1 (uncut)
-        labels = np.where(solid, np.int32(1), np.int32(0))
+        # Tri-dexel intersection: min of three axis distances
+        sd = np.minimum(np.minimum(sd_z, sd_x), sd_y)
 
-        # Mark surface voxels that are adjacent to air as label 2 (cut/exposed)
-        # A solid voxel is "on the machined surface" only if it was NOT solid
-        # in the original block — but we don't store original here.
-        # Instead we detect the machined surface as any solid voxel where
-        # neighbouring voxels in any direction are air (label 0).
-        # The original block faces (min/max extents) stay label 1 (uncut).
-        s = solid
-        # interior neighbour check — exclude the outer shell of the bounding box
-        exposed = np.zeros_like(solid)
-        exposed[1:-1, 1:-1, 1:-1] = (
-            s[1:-1, 1:-1, 1:-1] & (
-                ~s[0:-2, 1:-1, 1:-1] |
-                ~s[2:,   1:-1, 1:-1] |
-                ~s[1:-1, 0:-2, 1:-1] |
-                ~s[1:-1, 2:,   1:-1] |
-                ~s[1:-1, 1:-1, 0:-2] |
-                ~s[1:-1, 1:-1, 2:  ]
-            )
-        )
+        img["distance"] = sd.ravel(order="F").astype(np.float32)
+        return img
 
-        # Voxels on the outer shell of the original bounding box
-        # remain label 1 (they are uncut stock faces).
-        # We detect "original outer shell" as voxels outside the dexel range
-        # that are solid due to the pad, plus the first/last rows at the extents.
-        labels[exposed] = 2
 
-        # Restore outer bounding faces to label 1 (uncut stock walls/top/bottom)
-        # These are voxels at grid boundary — the pad region ensures the block
-        # edges are always solid and reachable.
-        labels[0,  :, :] = np.where(solid[0,  :, :], 1, 0)
-        labels[-1, :, :] = np.where(solid[-1, :, :], 1, 0)
-        labels[:,  0, :] = np.where(solid[:,  0, :], 1, 0)
-        labels[:, -1, :] = np.where(solid[:, -1, :], 1, 0)
-        labels[:, :,  0] = np.where(solid[:, :,  0], 1, 0)
-        labels[:, :, -1] = np.where(solid[:, :, -1], 1, 0)
+# ---------------------------------------------------------------------------
+# Signed distance helper
+# ---------------------------------------------------------------------------
 
-        img["labels"] = labels.ravel(order="F").astype(np.int32)
-        return img, "labels"
+def _column_signed_distance(segments: list, ray_positions: np.ndarray) -> np.ndarray:
+    """Signed distance from ray_positions to the union of segments along a ray.
+
+    Convention: positive = inside material, negative = outside.
+    """
+    n = len(ray_positions)
+    if not segments:
+        return np.full(n, -1e6)
+
+    seg_arr = np.asarray(segments, dtype=np.float64)  # (n_segs, 2)
+    lo = seg_arr[:, 0:1]   # (n_segs, 1)
+    hi = seg_arr[:, 1:2]   # (n_segs, 1)
+    r = ray_positions[np.newaxis, :]  # (1, n)
+
+    # Per-segment inside check: (n_segs, n)
+    inside = (r >= lo) & (r <= hi)
+
+    # Distance to nearest boundary when inside a segment
+    dist_lo = r - lo    # (n_segs, n)
+    dist_hi = hi - r    # (n_segs, n)
+    internal = np.minimum(dist_lo, dist_hi)
+
+    any_inside = inside.any(axis=0)        # (n,)
+    inside_sd = np.where(inside, internal, -np.inf).max(axis=0)  # (n,)
+
+    # Distance to nearest boundary when outside all segments
+    boundaries = seg_arr.ravel()           # (2 * n_segs,)
+    dists = np.abs(ray_positions[:, np.newaxis] - boundaries[np.newaxis, :])
+    nearest = dists.min(axis=1)            # (n,)
+
+    return np.where(any_inside, inside_sd, -nearest)
+
+
+def _build_reverse_map(index_map: np.ndarray, n_ticks: int) -> dict:
+    """Map dexel tick index → array of voxel grid indices that map to it."""
+    result: dict[int, np.ndarray] = {}
+    for d in range(n_ticks):
+        mask = index_map == d
+        if mask.any():
+            result[d] = np.where(mask)[0]
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -347,7 +353,6 @@ WORKPIECE_BOUNDS = (-5.0, 5.0, -5.0, 5.0, -3.0, 3.0)
 DEFAULT_RESOLUTION = 30
 DEFAULT_TOOL_RADIUS = 1.0
 DEFAULT_Z_DEPTH = 1.5
-GRID_RES_FACTOR = 2    # voxel grid = dexel resolution * this factor
 CACHE_STEPS = 80       # number of snapshots stored when pre-computing
 
 # Colours
@@ -643,26 +648,22 @@ class TriDexelDemo:
     # -----------------------------------------------------------------------
 
     def _rebuild_workpiece(self, grid: TriDexelGrid | None = None):
-        """Reconstruct the surface from *grid* (defaults to self.grid).
+        """Reconstruct surface via signed distance field from all three dexel axes.
 
-        Uses contour_labels / vtkSurfaceNets3D so walls and flat surfaces are
-        fully closed.  Splits output into uncut (label 1) and cut (label 2)
-        actors via the boundary_labels cell array.
+        Uses PyVista's contour (flying edges / marching cubes) on a float
+        distance field.  The float values allow sub-voxel interpolation so
+        the mesh passes through the exact dexel endpoint positions.
         """
         if not self.show_mesh:
             self.uncut_actor.SetVisibility(False)
             self.cut_actor.SetVisibility(False)
             return
         g = grid if grid is not None else self.grid
-        grid_res = self.resolution * GRID_RES_FACTOR
-        img, name = g.to_label_field(grid_res=grid_res)
+        img = g.to_distance_field(grid_res=self.resolution)
 
-        surface = img.contour_labels(
-            scalars=name,
-            boundary_style="all",
-            smoothing=True,
-            smoothing_iterations=12,
-            smoothing_relaxation=0.4,
+        surface = img.contour(
+            isosurfaces=[0.0],
+            scalars="distance",
         )
 
         if surface.n_points == 0:
@@ -670,24 +671,25 @@ class TriDexelDemo:
             self.cut_actor.SetVisibility(False)
             return
 
-        # boundary_labels is a 2-component array: [inside_label, outside_label]
-        bl = surface.cell_data["boundary_labels"]  # shape (N, 2)
+        # Classify faces as uncut (on original bounding box) vs cut (machined)
+        xmin, xmax, ymin, ymax, zmin, zmax = WORKPIECE_BOUNDS
+        cc = surface.cell_centers().points
+        # Half the voxel spacing as tolerance for boundary detection
+        extent = max(xmax - xmin, ymax - ymin, zmax - zmin)
+        tol = extent / self.resolution * 0.6
+        on_boundary = (
+            (np.abs(cc[:, 0] - xmin) < tol) | (np.abs(cc[:, 0] - xmax) < tol) |
+            (np.abs(cc[:, 1] - ymin) < tol) | (np.abs(cc[:, 1] - ymax) < tol) |
+            (np.abs(cc[:, 2] - zmin) < tol) | (np.abs(cc[:, 2] - zmax) < tol)
+        )
 
-        # Uncut faces: boundary between label 1 and label 0 (air)
-        mask_uncut = ((bl[:, 0] == 1) & (bl[:, 1] == 0)) | \
-                     ((bl[:, 0] == 0) & (bl[:, 1] == 1))
-        # Cut/machined faces: boundary between label 2 and label 0
-        mask_cut   = ((bl[:, 0] == 2) & (bl[:, 1] == 0)) | \
-                     ((bl[:, 0] == 0) & (bl[:, 1] == 2))
-
-        def extract(mask):
+        def _extract(mask):
             if not mask.any():
                 return pv.PolyData()
-            cell_ids = np.where(mask)[0]
-            return surface.extract_cells(cell_ids).extract_surface()
+            return surface.extract_cells(np.where(mask)[0]).extract_surface()
 
-        uncut_surf = extract(mask_uncut)
-        cut_surf   = extract(mask_cut)
+        uncut_surf = _extract(on_boundary)
+        cut_surf = _extract(~on_boundary)
 
         def _push(mesh, actor, surf):
             if surf.n_points == 0:
@@ -991,7 +993,7 @@ DEMO_MANIFEST = {
         "- Tri-dexel workpiece representation (X/Y/Z ray segments)\n"
         "- Sphere tool with Boolean subtraction\n"
         "- Zigzag, spiral, contour, and cross-hatch toolpaths\n"
-        "- Full closed-surface reconstruction via contour_labels (vtkSurfaceNets3D)\n"
+        "- Signed distance field from all 3 dexel axes → sub-voxel isosurface\n"
         "- Two-colour surface: uncut stock vs machined faces\n"
         "- Shadows and balanced three-point lighting\n"
         "- Pre-compute all states for instant slider scrubbing"
