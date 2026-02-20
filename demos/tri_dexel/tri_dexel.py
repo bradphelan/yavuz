@@ -44,19 +44,21 @@ class TriDexelGrid:
         xmin, xmax, ymin, ymax, zmin, zmax = bounds
 
         # X-axis dexels: rays parallel to X, grid over (Y, Z)
+        # Segment format: [lo, hi, lo_nx, lo_ny, lo_nz, hi_nx, hi_ny, hi_nz]
+        # Normals point outward from material into empty space.
         self.y_ticks_x = np.linspace(ymin, ymax, resolution)
         self.z_ticks_x = np.linspace(zmin, zmax, resolution)
-        self.x_segs = [[[xmin, xmax]] for _ in range(resolution * resolution)]
+        self.x_segs = [[[xmin, xmax, -1, 0, 0, 1, 0, 0]] for _ in range(resolution * resolution)]
 
         # Y-axis dexels: rays parallel to Y, grid over (X, Z)
         self.x_ticks_y = np.linspace(xmin, xmax, resolution)
         self.z_ticks_y = np.linspace(zmin, zmax, resolution)
-        self.y_segs = [[[ymin, ymax]] for _ in range(resolution * resolution)]
+        self.y_segs = [[[ymin, ymax, 0, -1, 0, 0, 1, 0]] for _ in range(resolution * resolution)]
 
         # Z-axis dexels: rays parallel to Z, grid over (X, Y)
         self.x_ticks_z = np.linspace(xmin, xmax, resolution)
         self.y_ticks_z = np.linspace(ymin, ymax, resolution)
-        self.z_segs = [[[zmin, zmax]] for _ in range(resolution * resolution)]
+        self.z_segs = [[[zmin, zmax, 0, 0, -1, 0, 0, 1]] for _ in range(resolution * resolution)]
 
     def copy(self) -> TriDexelGrid:
         return copy.deepcopy(self)
@@ -106,10 +108,26 @@ class TriDexelGrid:
         lo_arr = c_along - half
         hi_arr = c_along + half
 
+        # Pre-compute outward normals at cut points (vectorised).
+        # Normal = (sphere_centre - cut_point) / r  (points into void).
+        du_hits = du[hit_iu]          # (n_hits,)
+        dv_hits = dv[hit_iv]          # (n_hits,)
+        if axis == "z":
+            lo_nx = -du_hits / r;  lo_ny = -dv_hits / r;  lo_nz =  half / r
+            hi_nx = -du_hits / r;  hi_ny = -dv_hits / r;  hi_nz = -half / r
+        elif axis == "x":
+            lo_nx =  half / r;     lo_ny = -du_hits / r;  lo_nz = -dv_hits / r
+            hi_nx = -half / r;     hi_ny = -du_hits / r;  hi_nz = -dv_hits / r
+        else:   # y
+            lo_nx = -du_hits / r;  lo_ny =  half / r;     lo_nz = -dv_hits / r
+            hi_nx = -du_hits / r;  hi_ny = -half / r;     hi_nz = -dv_hits / r
+
         for k in range(len(hit_iv)):
             idx = int(hit_iv[k]) * nu + int(hit_iu[k])
+            lo_n = (lo_nx[k], lo_ny[k], lo_nz[k])
+            hi_n = (hi_nx[k], hi_ny[k], hi_nz[k])
             segs_list[idx] = _subtract_interval(
-                segs_list[idx], lo_arr[k], hi_arr[k],
+                segs_list[idx], lo_arr[k], hi_arr[k], lo_n, hi_n,
             )
 
     # ----- dexel line query -----
@@ -165,21 +183,21 @@ class TriDexelGrid:
         nu_z, nv_z = len(self.x_ticks_z), len(self.y_ticks_z)
         sd_z = _bilerp_axis_distance(
             self.z_segs, self.x_ticks_z, self.y_ticks_z, nu_z, nv_z,
-            zs, xs, ys, grid_res)
+            zs, xs, ys, grid_res, axis="z")
 
         # --- X-axis: rays along X, grid over (Y=u, Z=v) ---
         #   Result (gy, gz, gx) → transpose to (gx, gy, gz).
         nu_x, nv_x = len(self.y_ticks_x), len(self.z_ticks_x)
         sd_x = _bilerp_axis_distance(
             self.x_segs, self.y_ticks_x, self.z_ticks_x, nu_x, nv_x,
-            xs, ys, zs, grid_res).transpose(2, 0, 1)
+            xs, ys, zs, grid_res, axis="x").transpose(2, 0, 1)
 
         # --- Y-axis: rays along Y, grid over (X=u, Z=v) ---
         #   Result (gx, gz, gy) → transpose to (gx, gy, gz).
         nu_y, nv_y = len(self.x_ticks_y), len(self.z_ticks_y)
         sd_y = _bilerp_axis_distance(
             self.y_segs, self.x_ticks_y, self.z_ticks_y, nu_y, nv_y,
-            ys, xs, zs, grid_res).transpose(0, 2, 1)
+            ys, xs, zs, grid_res, axis="y").transpose(0, 2, 1)
 
         # Tri-dexel intersection: min of three axis distances
         sd = np.minimum(np.minimum(sd_z, sd_x), sd_y)
@@ -201,7 +219,7 @@ def _column_signed_distance(segments: list, ray_positions: np.ndarray) -> np.nda
     if not segments:
         return np.full(n, -1e6)
 
-    seg_arr = np.asarray(segments, dtype=np.float64)  # (n_segs, 2)
+    seg_arr = np.asarray(segments, dtype=np.float64)  # (n_segs, 8)
     lo = seg_arr[:, 0:1]   # (n_segs, 1)
     hi = seg_arr[:, 1:2]   # (n_segs, 1)
     r = ray_positions[np.newaxis, :]  # (1, n)
@@ -218,51 +236,121 @@ def _column_signed_distance(segments: list, ray_positions: np.ndarray) -> np.nda
     inside_sd = np.where(inside, internal, -np.inf).max(axis=0)  # (n,)
 
     # Distance to nearest boundary when outside all segments
-    boundaries = seg_arr.ravel()           # (2 * n_segs,)
+    boundaries = np.concatenate([seg_arr[:, 0], seg_arr[:, 1]])  # (2*n_segs,)
     dists = np.abs(ray_positions[:, np.newaxis] - boundaries[np.newaxis, :])
     nearest = dists.min(axis=1)            # (n,)
 
     return np.where(any_inside, inside_sd, -nearest)
 
 
+def _column_signed_distance_with_grads(segments: list, ray_positions: np.ndarray,
+                                       axis: str):
+    """Signed distance + normal gradient components for tangent-plane correction.
+
+    Returns (sd_base, n_along, n_perp_u, n_perp_v) each shape (n,).
+
+    sd_base:  directed distance from query position to nearest boundary
+              (boundary_pos - query_pos).
+    n_along:  along-ray component of the nearest boundary's outward normal.
+    n_perp_u: first perpendicular component.
+    n_perp_v: second perpendicular component.
+
+    The tilted signed distance at a voxel offset by (du, dv) from this
+    dexel ray is:  sd_tilted = sd_base * n_along - du * n_perp_u - dv * n_perp_v
+    For axis-aligned normals this reduces exactly to the classic SD.
+    """
+    n = len(ray_positions)
+    if not segments:
+        return (np.full(n, -1e6), np.ones(n), np.zeros(n), np.zeros(n))
+
+    seg_arr = np.asarray(segments, dtype=np.float64)   # (n_segs, 8)
+    lo = seg_arr[:, 0]    # (n_segs,)
+    hi = seg_arr[:, 1]    # (n_segs,)
+
+    # Directed distance from every query position to every boundary
+    # boundary_pos - query_pos  → positive when boundary is above query
+    all_pos = np.concatenate([lo, hi])                       # (2*n_segs,)
+    directed = all_pos[:, np.newaxis] - ray_positions[np.newaxis, :]  # (2B, n)
+    abs_dist = np.abs(directed)
+
+    # Nearest boundary for each query point
+    nearest_idx = np.argmin(abs_dist, axis=0)                # (n,)
+    sd_base = directed[nearest_idx, np.arange(n)]            # (n,)
+
+    # Normals table: lo normals (cols 2-4), then hi normals (cols 5-7)
+    all_normals = np.concatenate([seg_arr[:, 2:5],
+                                  seg_arr[:, 5:8]], axis=0)  # (2B, 3)
+    normal = all_normals[nearest_idx]                         # (n, 3)
+
+    # Decompose into along-ray and perpendicular components
+    if axis == "z":
+        return sd_base, normal[:, 2], normal[:, 0], normal[:, 1]
+    elif axis == "x":
+        return sd_base, normal[:, 0], normal[:, 1], normal[:, 2]
+    else:   # y
+        return sd_base, normal[:, 1], normal[:, 0], normal[:, 2]
+
+
 def _bilerp_axis_distance(segs_list, ticks_u, ticks_v, nu, nv,
                           ray_positions, u_positions, v_positions,
-                          grid_res):
+                          grid_res, axis):
     """Bilinearly-interpolated signed distance field for one dexel axis.
 
-    Instead of nearest-neighbour lookup, each voxel's distance is
-    bilinearly interpolated from the four surrounding dexel rays.
-    This produces a smooth gradient across dexel cell boundaries so
-    that thin walls (single-dexel-thick) are correctly reconstructed
-    by flying edges.
+    Uses tangent-plane gradient correction: each corner ray's SD is
+    adjusted by the stored surface normal before bilinear blending,
+    so that tilted cut surfaces interpolate smoothly instead of
+    producing staircase artifacts.
 
     Returns array of shape (len(u_positions), len(v_positions), len(ray_positions)).
     """
-    # Pre-compute signed distance column for every dexel ray
-    sd_rays = np.empty((nv, nu, grid_res))
+    # Pre-compute gradient components for every dexel ray
+    sd_base_all = np.empty((nv, nu, grid_res))
+    n_al_all    = np.empty((nv, nu, grid_res))
+    n_pu_all    = np.empty((nv, nu, grid_res))
+    n_pv_all    = np.empty((nv, nu, grid_res))
     for iv in range(nv):
         for iu in range(nu):
-            sd_rays[iv, iu, :] = _column_signed_distance(
-                segs_list[iv * nu + iu], ray_positions)
+            (sd_base_all[iv, iu, :],
+             n_al_all[iv, iu, :],
+             n_pu_all[iv, iu, :],
+             n_pv_all[iv, iu, :]) = _column_signed_distance_with_grads(
+                segs_list[iv * nu + iu], ray_positions, axis)
 
     # Fractional positions of voxels within the dexel grid
-    du = ticks_u[1] - ticks_u[0] if nu > 1 else 1.0
-    dv = ticks_v[1] - ticks_v[0] if nv > 1 else 1.0
-    fu = np.clip((u_positions - ticks_u[0]) / du, 0, nu - 1 - 1e-9)
-    fv = np.clip((v_positions - ticks_v[0]) / dv, 0, nv - 1 - 1e-9)
+    du_tick = ticks_u[1] - ticks_u[0] if nu > 1 else 1.0
+    dv_tick = ticks_v[1] - ticks_v[0] if nv > 1 else 1.0
+    fu = np.clip((u_positions - ticks_u[0]) / du_tick, 0, nu - 1 - 1e-9)
+    fv = np.clip((v_positions - ticks_v[0]) / dv_tick, 0, nv - 1 - 1e-9)
 
     iu0 = np.floor(fu).astype(int)   # (gu,)
     iv0 = np.floor(fv).astype(int)   # (gv,)
     wu = fu - iu0                     # (gu,)
     wv = fv - iv0                     # (gv,)
 
-    # Gather signed distances from the 4 surrounding dexel rays
-    # sd_rays indexed as [iv, iu, ray_pos]
-    # Result shape: (gu, gv, grid_res)
-    s00 = sd_rays[iv0[np.newaxis, :],     iu0[:, np.newaxis],     :]
-    s10 = sd_rays[iv0[np.newaxis, :],     iu0[:, np.newaxis] + 1, :]
-    s01 = sd_rays[iv0[np.newaxis, :] + 1, iu0[:, np.newaxis],     :]
-    s11 = sd_rays[iv0[np.newaxis, :] + 1, iu0[:, np.newaxis] + 1, :]
+    # Perpendicular offsets from each corner ray to the voxel position
+    du_00 = ( wu      * du_tick)[:, np.newaxis, np.newaxis]   # (gu, 1, 1)
+    du_10 = ((wu - 1) * du_tick)[:, np.newaxis, np.newaxis]
+    dv_00 = ( wv      * dv_tick)[np.newaxis, :, np.newaxis]   # (1, gv, 1)
+    dv_01 = ((wv - 1) * dv_tick)[np.newaxis, :, np.newaxis]
+
+    # Helper: gather a (nv, nu, grid_res) array → (gu, gv, grid_res)
+    def _g(arr, iv_idx, iu_idx):
+        return arr[iv_idx[np.newaxis, :], iu_idx[:, np.newaxis], :]
+
+    # Tangent-plane corrected SD at each of the 4 bilinear corners:
+    #   sd_tilted = sd_base * n_along - du_offset * n_perp_u - dv_offset * n_perp_v
+    s00 = (_g(sd_base_all, iv0, iu0)     * _g(n_al_all, iv0, iu0)
+            - du_00 * _g(n_pu_all, iv0, iu0)
+            - dv_00 * _g(n_pv_all, iv0, iu0))
+    s10 = (_g(sd_base_all, iv0, iu0 + 1) * _g(n_al_all, iv0, iu0 + 1)
+            - du_10 * _g(n_pu_all, iv0, iu0 + 1)
+            - dv_00 * _g(n_pv_all, iv0, iu0 + 1))
+    s01 = (_g(sd_base_all, iv0 + 1, iu0) * _g(n_al_all, iv0 + 1, iu0)
+            - du_00 * _g(n_pu_all, iv0 + 1, iu0)
+            - dv_01 * _g(n_pv_all, iv0 + 1, iu0))
+    s11 = (_g(sd_base_all, iv0 + 1, iu0 + 1) * _g(n_al_all, iv0 + 1, iu0 + 1)
+            - du_10 * _g(n_pu_all, iv0 + 1, iu0 + 1)
+            - dv_01 * _g(n_pv_all, iv0 + 1, iu0 + 1))
 
     wu3 = wu[:, np.newaxis, np.newaxis]   # (gu, 1, 1)
     wv3 = wv[np.newaxis, :, np.newaxis]   # (1, gv, 1)
@@ -277,17 +365,29 @@ def _bilerp_axis_distance(segs_list, ticks_u, ticks_v, nu, nv,
 # Interval helper
 # ---------------------------------------------------------------------------
 
-def _subtract_interval(segments: list, lo: float, hi: float) -> list:
+def _subtract_interval(segments: list, lo: float, hi: float,
+                       lo_normal=None, hi_normal=None) -> list:
+    """Remove [lo, hi] from segments, propagating boundary normals.
+
+    lo_normal / hi_normal are (nx, ny, nz) outward normals at the cut
+    boundaries.  Existing segment normals are preserved on unchanged ends.
+    """
     result = []
     for seg in segments:
         s0, s1 = seg[0], seg[1]
         if s1 <= lo or s0 >= hi:
-            result.append([s0, s1])
+            result.append(seg)            # no overlap — keep as-is
         else:
             if s0 < lo:
-                result.append([s0, lo])
+                # Left remnant: keep s0's normal, new hi gets lo_normal
+                result.append([s0, lo,
+                               seg[2], seg[3], seg[4],
+                               lo_normal[0], lo_normal[1], lo_normal[2]])
             if s1 > hi:
-                result.append([hi, s1])
+                # Right remnant: new lo gets hi_normal, keep s1's normal
+                result.append([hi, s1,
+                               hi_normal[0], hi_normal[1], hi_normal[2],
+                               seg[5], seg[6], seg[7]])
     return result
 
 
