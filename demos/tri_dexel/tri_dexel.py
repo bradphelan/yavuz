@@ -143,9 +143,9 @@ class TriDexelGrid:
         boundary along each axis (positive = inside material), then take
         the minimum across axes (tri-dexel intersection).
 
-        The resulting field can be passed to ``contour(isosurfaces=[0.0])``
-        which linearly interpolates between voxel values to place the
-        surface at the exact dexel endpoint positions.
+        Uses bilinear interpolation between the four surrounding dexel rays
+        so that thin walls (single-dexel-thick features) produce a smooth
+        distance gradient that flying edges can reconstruct.
         """
         xmin, xmax, ymin, ymax, zmin, zmax = self.bounds
         pad = 0.02
@@ -160,50 +160,26 @@ class TriDexelGrid:
             origin=(xs[0], ys[0], zs[0]),
         )
 
-        far_outside = -1e6
-
-        # --- Z-axis: segments along Z, grid over (X, Y) ---
-        sd_z = np.full((grid_res, grid_res, grid_res), far_outside)
+        # --- Z-axis: rays along Z, grid over (X=u, Y=v) ---
+        #   Result (gx, gy, gz) maps directly to sd volume axes.
         nu_z, nv_z = len(self.x_ticks_z), len(self.y_ticks_z)
-        gx_z = _build_reverse_map(
-            np.clip(np.searchsorted(self.x_ticks_z, xs) - 1, 0, nu_z - 2), nu_z)
-        gy_z = _build_reverse_map(
-            np.clip(np.searchsorted(self.y_ticks_z, ys) - 1, 0, nv_z - 2), nv_z)
-        for iv, gy_arr in gy_z.items():
-            for iu, gx_arr in gx_z.items():
-                sd_col = _column_signed_distance(
-                    self.z_segs[iv * nu_z + iu], zs)
-                sd_z[np.ix_(gx_arr, gy_arr)] = sd_col  # broadcast (gx, gy, grid_res)
+        sd_z = _bilerp_axis_distance(
+            self.z_segs, self.x_ticks_z, self.y_ticks_z, nu_z, nv_z,
+            zs, xs, ys, grid_res)
 
-        # --- X-axis: segments along X, grid over (Y, Z) ---
-        sd_x = np.full((grid_res, grid_res, grid_res), far_outside)
+        # --- X-axis: rays along X, grid over (Y=u, Z=v) ---
+        #   Result (gy, gz, gx) → transpose to (gx, gy, gz).
         nu_x, nv_x = len(self.y_ticks_x), len(self.z_ticks_x)
-        gy_x = _build_reverse_map(
-            np.clip(np.searchsorted(self.y_ticks_x, ys) - 1, 0, nu_x - 2), nu_x)
-        gz_x = _build_reverse_map(
-            np.clip(np.searchsorted(self.z_ticks_x, zs) - 1, 0, nv_x - 2), nv_x)
-        for iv, gz_arr in gz_x.items():
-            for iu, gy_arr in gy_x.items():
-                sd_col = _column_signed_distance(
-                    self.x_segs[iv * nu_x + iu], xs)
-                # sd_col along X → axis 0 of (grid_res, grid_res, grid_res)
-                sd_x[np.ix_(np.arange(grid_res), gy_arr, gz_arr)] = \
-                    sd_col[:, np.newaxis, np.newaxis]
+        sd_x = _bilerp_axis_distance(
+            self.x_segs, self.y_ticks_x, self.z_ticks_x, nu_x, nv_x,
+            xs, ys, zs, grid_res).transpose(2, 0, 1)
 
-        # --- Y-axis: segments along Y, grid over (X, Z) ---
-        sd_y = np.full((grid_res, grid_res, grid_res), far_outside)
+        # --- Y-axis: rays along Y, grid over (X=u, Z=v) ---
+        #   Result (gx, gz, gy) → transpose to (gx, gy, gz).
         nu_y, nv_y = len(self.x_ticks_y), len(self.z_ticks_y)
-        gx_y = _build_reverse_map(
-            np.clip(np.searchsorted(self.x_ticks_y, xs) - 1, 0, nu_y - 2), nu_y)
-        gz_y = _build_reverse_map(
-            np.clip(np.searchsorted(self.z_ticks_y, zs) - 1, 0, nv_y - 2), nv_y)
-        for iv, gz_arr in gz_y.items():
-            for iu, gx_arr in gx_y.items():
-                sd_col = _column_signed_distance(
-                    self.y_segs[iv * nu_y + iu], ys)
-                # sd_col along Y → axis 1 of (grid_res, grid_res, grid_res)
-                sd_y[np.ix_(gx_arr, np.arange(grid_res), gz_arr)] = \
-                    sd_col[np.newaxis, :, np.newaxis]
+        sd_y = _bilerp_axis_distance(
+            self.y_segs, self.x_ticks_y, self.z_ticks_y, nu_y, nv_y,
+            ys, xs, zs, grid_res).transpose(0, 2, 1)
 
         # Tri-dexel intersection: min of three axis distances
         sd = np.minimum(np.minimum(sd_z, sd_x), sd_y)
@@ -249,14 +225,52 @@ def _column_signed_distance(segments: list, ray_positions: np.ndarray) -> np.nda
     return np.where(any_inside, inside_sd, -nearest)
 
 
-def _build_reverse_map(index_map: np.ndarray, n_ticks: int) -> dict:
-    """Map dexel tick index → array of voxel grid indices that map to it."""
-    result: dict[int, np.ndarray] = {}
-    for d in range(n_ticks):
-        mask = index_map == d
-        if mask.any():
-            result[d] = np.where(mask)[0]
-    return result
+def _bilerp_axis_distance(segs_list, ticks_u, ticks_v, nu, nv,
+                          ray_positions, u_positions, v_positions,
+                          grid_res):
+    """Bilinearly-interpolated signed distance field for one dexel axis.
+
+    Instead of nearest-neighbour lookup, each voxel's distance is
+    bilinearly interpolated from the four surrounding dexel rays.
+    This produces a smooth gradient across dexel cell boundaries so
+    that thin walls (single-dexel-thick) are correctly reconstructed
+    by flying edges.
+
+    Returns array of shape (len(u_positions), len(v_positions), len(ray_positions)).
+    """
+    # Pre-compute signed distance column for every dexel ray
+    sd_rays = np.empty((nv, nu, grid_res))
+    for iv in range(nv):
+        for iu in range(nu):
+            sd_rays[iv, iu, :] = _column_signed_distance(
+                segs_list[iv * nu + iu], ray_positions)
+
+    # Fractional positions of voxels within the dexel grid
+    du = ticks_u[1] - ticks_u[0] if nu > 1 else 1.0
+    dv = ticks_v[1] - ticks_v[0] if nv > 1 else 1.0
+    fu = np.clip((u_positions - ticks_u[0]) / du, 0, nu - 1 - 1e-9)
+    fv = np.clip((v_positions - ticks_v[0]) / dv, 0, nv - 1 - 1e-9)
+
+    iu0 = np.floor(fu).astype(int)   # (gu,)
+    iv0 = np.floor(fv).astype(int)   # (gv,)
+    wu = fu - iu0                     # (gu,)
+    wv = fv - iv0                     # (gv,)
+
+    # Gather signed distances from the 4 surrounding dexel rays
+    # sd_rays indexed as [iv, iu, ray_pos]
+    # Result shape: (gu, gv, grid_res)
+    s00 = sd_rays[iv0[np.newaxis, :],     iu0[:, np.newaxis],     :]
+    s10 = sd_rays[iv0[np.newaxis, :],     iu0[:, np.newaxis] + 1, :]
+    s01 = sd_rays[iv0[np.newaxis, :] + 1, iu0[:, np.newaxis],     :]
+    s11 = sd_rays[iv0[np.newaxis, :] + 1, iu0[:, np.newaxis] + 1, :]
+
+    wu3 = wu[:, np.newaxis, np.newaxis]   # (gu, 1, 1)
+    wv3 = wv[np.newaxis, :, np.newaxis]   # (1, gv, 1)
+
+    return (s00 * (1 - wu3) * (1 - wv3) +
+            s10 * wu3       * (1 - wv3) +
+            s01 * (1 - wu3) * wv3 +
+            s11 * wu3       * wv3)
 
 
 # ---------------------------------------------------------------------------
@@ -664,7 +678,7 @@ class TriDexelDemo:
             self.cut_actor.SetVisibility(False)
             return
         g = grid if grid is not None else self.grid
-        img = g.to_distance_field(grid_res=self.resolution)
+        img = g.to_distance_field(grid_res=self.resolution * 2)
 
         surface = img.contour(
             isosurfaces=[0.0],
