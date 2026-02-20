@@ -4,11 +4,13 @@ Demonstrates the tri-dexel volumetric representation used in CNC simulation.
 A sphere tool is swept along predefined toolpaths, subtracting material from a
 workpiece represented as three orthogonal sets of dexel ray segments.
 
-Surface reconstruction computes a floating-point signed distance field from
-all three dexel axes, then extracts the isosurface via PyVista's contour
-(flying edges).  The float values enable sub-voxel interpolation so the mesh
-passes through the exact dexel endpoint positions.  Faces are classified as
-uncut stock or machined surface for two-colour rendering.
+Surface reconstruction uses dual contouring: the grid cells ARE the dexel
+cells, edge crossings are detected from the sign field, and QEF (Quadratic
+Error Function) minimisation places one vertex per active cell.  Surface
+normals for QEF are computed from the gradient of the combined signed
+distance field (central finite differences), giving normals consistent with
+the actual isosurface geometry.  Sharp features (workpiece edges/corners) are
+preserved, and flat machined surfaces stay flat.
 """
 
 from __future__ import annotations
@@ -152,58 +154,257 @@ class TriDexelGrid:
                         pts.append([[u, v, seg[0]], [u, v, seg[1]]])
         return np.array(pts) if pts else np.empty((0, 2, 3))
 
-    # ----- signed distance field for isosurface extraction -----
+    # ----- dual contouring surface reconstruction -----
 
-    def to_distance_field(self, grid_res: int) -> pv.ImageData:
-        """Build a float signed distance field from all three dexel axes.
+    def to_dual_contour_mesh(self) -> pv.PolyData:
+        """Surface reconstruction via dual contouring.
 
-        For each voxel, compute the signed distance to the nearest segment
-        boundary along each axis (positive = inside material), then take
-        the minimum across axes (tri-dexel intersection).
-
-        Uses bilinear interpolation between the four surrounding dexel rays
-        so that thin walls (single-dexel-thick features) produce a smooth
-        distance gradient that flying edges can reconstruct.
+        The grid cells ARE the dexel cells (no interpolation).  Edge
+        crossings are detected from the sign field, and QEF minimisation
+        places one vertex per active cell.  Surface normals are derived
+        from the gradient of the combined signed distance field (central
+        finite differences), giving normals consistent with the actual
+        isosurface rather than individual sphere intersection normals.
         """
         xmin, xmax, ymin, ymax, zmin, zmax = self.bounds
-        pad = 0.02
+        res = self.resolution
 
-        xs = np.linspace(xmin - pad, xmax + pad, grid_res)
-        ys = np.linspace(ymin - pad, ymax + pad, grid_res)
-        zs = np.linspace(zmin - pad, zmax + pad, grid_res)
+        # Grid: dexel ticks + 1 padding cell on each side
+        step_x = (xmax - xmin) / (res - 1) if res > 1 else 1.0
+        step_y = (ymax - ymin) / (res - 1) if res > 1 else 1.0
+        step_z = (zmax - zmin) / (res - 1) if res > 1 else 1.0
 
-        img = pv.ImageData(
-            dimensions=(grid_res, grid_res, grid_res),
-            spacing=(xs[1] - xs[0], ys[1] - ys[0], zs[1] - zs[0]),
-            origin=(xs[0], ys[0], zs[0]),
-        )
+        grid_x = np.concatenate([[xmin - step_x], self.x_ticks_z, [xmax + step_x]])
+        grid_y = np.concatenate([[ymin - step_y], self.y_ticks_z, [ymax + step_y]])
+        grid_z = np.concatenate([[zmin - step_z], self.z_ticks_x, [zmax + step_z]])
 
-        # --- Z-axis: rays along Z, grid over (X=u, Y=v) ---
-        #   Result (gx, gy, gz) maps directly to sd volume axes.
-        nu_z, nv_z = len(self.x_ticks_z), len(self.y_ticks_z)
-        sd_z = _bilerp_axis_distance(
-            self.z_segs, self.x_ticks_z, self.y_ticks_z, nu_z, nv_z,
-            zs, xs, ys, grid_res, axis="z")
+        nx, ny, nz = len(grid_x), len(grid_y), len(grid_z)
 
-        # --- X-axis: rays along X, grid over (Y=u, Z=v) ---
-        #   Result (gy, gz, gx) → transpose to (gx, gy, gz).
-        nu_x, nv_x = len(self.y_ticks_x), len(self.z_ticks_x)
-        sd_x = _bilerp_axis_distance(
-            self.x_segs, self.y_ticks_x, self.z_ticks_x, nu_x, nv_x,
-            xs, ys, zs, grid_res, axis="x").transpose(2, 0, 1)
+        # -- Per-axis signed distance (normals from gradient, not stored) --
+        # Z-axis: z_segs[iv * res + iu], iu=x index, iv=y index
+        sd_z = np.full((nx, ny, nz), -1e6)
+        for iv in range(res):
+            for iu in range(res):
+                sd_z[iu + 1, iv + 1, 1:-1] = _column_signed_distance(
+                    self.z_segs[iv * res + iu], grid_z[1:-1])
 
-        # --- Y-axis: rays along Y, grid over (X=u, Z=v) ---
-        #   Result (gx, gz, gy) → transpose to (gx, gy, gz).
-        nu_y, nv_y = len(self.x_ticks_y), len(self.z_ticks_y)
-        sd_y = _bilerp_axis_distance(
-            self.y_segs, self.x_ticks_y, self.z_ticks_y, nu_y, nv_y,
-            ys, xs, zs, grid_res, axis="y").transpose(0, 2, 1)
+        # X-axis: x_segs[iv * res + iu], iu=y index, iv=z index
+        sd_x = np.full((nx, ny, nz), -1e6)
+        for iv in range(res):
+            for iu in range(res):
+                sd_x[1:-1, iu + 1, iv + 1] = _column_signed_distance(
+                    self.x_segs[iv * res + iu], grid_x[1:-1])
 
-        # Tri-dexel intersection: min of three axis distances
-        sd = np.minimum(np.minimum(sd_z, sd_x), sd_y)
+        # Y-axis: y_segs[iv * res + iu], iu=x index, iv=z index
+        sd_y = np.full((nx, ny, nz), -1e6)
+        for iv in range(res):
+            for iu in range(res):
+                sd_y[iu + 1, 1:-1, iv + 1] = _column_signed_distance(
+                    self.y_segs[iv * res + iu], grid_y[1:-1])
 
-        img["distance"] = sd.ravel(order="F").astype(np.float32)
-        return img
+        # Combined sign field (tri-dexel intersection = min)
+        sd_combined = np.minimum(np.minimum(sd_z, sd_x), sd_y)
+        signs = sd_combined >= 0
+
+        # Surface normals from gradient of combined SD field.
+        # Central finite differences give normals consistent with the
+        # actual isosurface, not individual sphere normals.
+        grad = np.zeros((nx, ny, nz, 3))
+        grad[1:-1, :, :, 0] = (sd_combined[2:, :, :] -
+                                sd_combined[:-2, :, :]) / (2 * step_x)
+        grad[:, 1:-1, :, 1] = (sd_combined[:, 2:, :] -
+                                sd_combined[:, :-2, :]) / (2 * step_y)
+        grad[:, :, 1:-1, 2] = (sd_combined[:, :, 2:] -
+                                sd_combined[:, :, :-2]) / (2 * step_z)
+        grad_len = np.linalg.norm(grad, axis=-1, keepdims=True)
+        grad_len = np.where(grad_len < 1e-10, 1.0, grad_len)
+        grad_normals = grad / grad_len
+
+        # -- Edge crossing detection --
+        def _crossings(s0, s1, sgn0, sgn1):
+            cross = sgn0 != sgn1
+            denom = s0 - s1
+            denom = np.where(np.abs(denom) < 1e-12, 1e-12, denom)
+            return cross, s0 / denom
+
+        # Helper: interpolate gradient normal at crossing position
+        def _interp_normal(n0, n1, tv):
+            n = (1 - tv[:, None]) * n0 + tv[:, None] * n1
+            nlen = np.linalg.norm(n, axis=1, keepdims=True)
+            nlen = np.where(nlen < 1e-10, 1.0, nlen)
+            return n / nlen
+
+        # Z-edges
+        z_cross, z_t = _crossings(
+            sd_combined[:, :, :-1], sd_combined[:, :, 1:],
+            signs[:, :, :-1], signs[:, :, 1:])
+        z_ei, z_ej, z_ek = np.where(z_cross)
+        if len(z_ei):
+            z_tv = z_t[z_ei, z_ej, z_ek]
+            cp_z = np.column_stack([
+                grid_x[z_ei], grid_y[z_ej],
+                grid_z[z_ek] + z_tv * (grid_z[z_ek + 1] - grid_z[z_ek])])
+            cn_z = _interp_normal(
+                grad_normals[z_ei, z_ej, z_ek],
+                grad_normals[z_ei, z_ej, z_ek + 1], z_tv)
+        else:
+            cp_z = np.empty((0, 3)); cn_z = np.empty((0, 3))
+
+        # X-edges
+        x_cross, x_t = _crossings(
+            sd_combined[:-1, :, :], sd_combined[1:, :, :],
+            signs[:-1, :, :], signs[1:, :, :])
+        x_ei, x_ej, x_ek = np.where(x_cross)
+        if len(x_ei):
+            x_tv = x_t[x_ei, x_ej, x_ek]
+            cp_x = np.column_stack([
+                grid_x[x_ei] + x_tv * (grid_x[x_ei + 1] - grid_x[x_ei]),
+                grid_y[x_ej], grid_z[x_ek]])
+            cn_x = _interp_normal(
+                grad_normals[x_ei, x_ej, x_ek],
+                grad_normals[x_ei + 1, x_ej, x_ek], x_tv)
+        else:
+            cp_x = np.empty((0, 3)); cn_x = np.empty((0, 3))
+
+        # Y-edges
+        y_cross, y_t = _crossings(
+            sd_combined[:, :-1, :], sd_combined[:, 1:, :],
+            signs[:, :-1, :], signs[:, 1:, :])
+        y_ei, y_ej, y_ek = np.where(y_cross)
+        if len(y_ei):
+            y_tv = y_t[y_ei, y_ej, y_ek]
+            cp_y = np.column_stack([
+                grid_x[y_ei],
+                grid_y[y_ej] + y_tv * (grid_y[y_ej + 1] - grid_y[y_ej]),
+                grid_z[y_ek]])
+            cn_y = _interp_normal(
+                grad_normals[y_ei, y_ej, y_ek],
+                grad_normals[y_ei, y_ej + 1, y_ek], y_tv)
+        else:
+            cp_y = np.empty((0, 3)); cn_y = np.empty((0, 3))
+
+        total_crossings = len(z_ei) + len(x_ei) + len(y_ei)
+        if total_crossings == 0:
+            return pv.PolyData()
+
+        # -- QEF accumulation --
+        ncx, ncy, ncz = nx - 1, ny - 1, nz - 1
+        n_cells = ncx * ncy * ncz
+
+        ATA = np.zeros((n_cells, 3, 3))
+        ATb = np.zeros((n_cells, 3))
+        cross_count = np.zeros(n_cells, dtype=np.int32)
+        cross_pos_sum = np.zeros((n_cells, 3))
+
+        def _cell_flat(cx, cy, cz):
+            return cx * ncy * ncz + cy * ncz + cz
+
+        def _scatter(eix, eij, eik, cpos, cnorm, offsets):
+            if len(eix) == 0:
+                return
+            nn = cnorm[:, :, None] * cnorm[:, None, :]
+            ndp = np.sum(cnorm * cpos, axis=1)
+            atb = ndp[:, None] * cnorm
+            for di, dj, dk in offsets:
+                cx = eix + di
+                cy = eij + dj
+                cz = eik + dk
+                ok = ((cx >= 0) & (cx < ncx) &
+                      (cy >= 0) & (cy < ncy) &
+                      (cz >= 0) & (cz < ncz))
+                if not ok.any():
+                    continue
+                ci = _cell_flat(cx[ok], cy[ok], cz[ok])
+                np.add.at(ATA, ci, nn[ok])
+                np.add.at(ATb, ci, atb[ok])
+                np.add.at(cross_count, ci, 1)
+                np.add.at(cross_pos_sum, ci, cpos[ok])
+
+        # Z-edge at (i,j,k) → 4 cells in XY plane
+        _scatter(z_ei, z_ej, z_ek, cp_z, cn_z,
+                 [(-1, -1, 0), (0, -1, 0), (0, 0, 0), (-1, 0, 0)])
+        # X-edge at (i,j,k) → 4 cells in YZ plane
+        _scatter(x_ei, x_ej, x_ek, cp_x, cn_x,
+                 [(0, -1, -1), (0, 0, -1), (0, 0, 0), (0, -1, 0)])
+        # Y-edge at (i,j,k) → 4 cells in XZ plane
+        _scatter(y_ei, y_ej, y_ek, cp_y, cn_y,
+                 [(-1, 0, -1), (-1, 0, 0), (0, 0, 0), (0, 0, -1)])
+
+        # -- QEF solve --
+        active_idx = np.where(cross_count > 0)[0]
+        if len(active_idx) == 0:
+            return pv.PolyData()
+
+        mass_point = (cross_pos_sum[active_idx] /
+                      np.maximum(cross_count[active_idx, None], 1))
+        bias = 0.1
+        A = ATA[active_idx] + (bias ** 2) * np.eye(3)
+        b = ATb[active_idx] + (bias ** 2) * mass_point
+
+        try:
+            vertices = np.linalg.solve(A, b[..., np.newaxis])[..., 0]
+        except np.linalg.LinAlgError:
+            vertices = mass_point.copy()
+
+        # Clamp vertices to cell bounds
+        acx = active_idx // (ncy * ncz)
+        acy = (active_idx % (ncy * ncz)) // ncz
+        acz = active_idx % ncz
+        cell_lo = np.column_stack([
+            grid_x[acx], grid_y[acy], grid_z[acz]])
+        cell_hi = np.column_stack([
+            grid_x[acx + 1], grid_y[acy + 1], grid_z[acz + 1]])
+        vertices = np.clip(vertices, cell_lo, cell_hi)
+
+        # Vertex index map: cell flat index → vertex index
+        vert_map = np.full(n_cells, -1, dtype=np.int64)
+        vert_map[active_idx] = np.arange(len(active_idx))
+
+        # -- Quad emission --
+        faces_list = []
+
+        def _emit(eix, eij, eik, sign_first, offsets):
+            if len(eix) == 0:
+                return
+            ne = len(eix)
+            vidx = np.full((ne, 4), -1, dtype=np.int64)
+            ok = np.ones(ne, dtype=bool)
+            for col, (di, dj, dk) in enumerate(offsets):
+                cx = eix + di; cy = eij + dj; cz = eik + dk
+                inb = ((cx >= 0) & (cx < ncx) &
+                       (cy >= 0) & (cy < ncy) &
+                       (cz >= 0) & (cz < ncz))
+                ok &= inb
+                cf = np.where(inb, _cell_flat(cx, cy, cz), 0)
+                vi = np.where(inb, vert_map[cf], -1)
+                ok &= (vi >= 0)
+                vidx[:, col] = vi
+            if not ok.any():
+                return
+            vidx = vidx[ok]
+            sf = sign_first[ok]
+            vidx[~sf] = vidx[~sf][:, ::-1]
+            faces_list.append(vidx[:, [0, 1, 2]])
+            faces_list.append(vidx[:, [0, 2, 3]])
+
+        # Z-edges → quads in XY, +Z normal when first node is inside
+        _emit(z_ei, z_ej, z_ek, signs[z_ei, z_ej, z_ek],
+              [(-1, -1, 0), (0, -1, 0), (0, 0, 0), (-1, 0, 0)])
+        # X-edges → quads in YZ, +X normal when first node is inside
+        _emit(x_ei, x_ej, x_ek, signs[x_ei, x_ej, x_ek],
+              [(0, -1, -1), (0, 0, -1), (0, 0, 0), (0, -1, 0)])
+        # Y-edges → quads in XZ, +Y normal when first node is inside
+        _emit(y_ei, y_ej, y_ek, signs[y_ei, y_ej, y_ek],
+              [(-1, 0, -1), (-1, 0, 0), (0, 0, 0), (0, 0, -1)])
+
+        if not faces_list:
+            return pv.PolyData()
+
+        all_tris = np.concatenate(faces_list, axis=0)
+        n_tri = len(all_tris)
+        faces = np.column_stack([
+            np.full(n_tri, 3, dtype=np.int64), all_tris]).ravel()
+        return pv.PolyData(vertices, faces=faces)
 
 
 # ---------------------------------------------------------------------------
@@ -243,122 +444,41 @@ def _column_signed_distance(segments: list, ray_positions: np.ndarray) -> np.nda
     return np.where(any_inside, inside_sd, -nearest)
 
 
-def _column_signed_distance_with_grads(segments: list, ray_positions: np.ndarray,
-                                       axis: str):
-    """Signed distance + normal gradient components for tangent-plane correction.
+def _column_sd_and_normals(segments: list,
+                           ray_positions: np.ndarray):
+    """Signed distance AND 3-D outward normal of the nearest boundary.
 
-    Returns (sd_base, n_along, n_perp_u, n_perp_v) each shape (n,).
-
-    sd_base:  directed distance from query position to nearest boundary
-              (boundary_pos - query_pos).
-    n_along:  along-ray component of the nearest boundary's outward normal.
-    n_perp_u: first perpendicular component.
-    n_perp_v: second perpendicular component.
-
-    The tilted signed distance at a voxel offset by (du, dv) from this
-    dexel ray is:  sd_tilted = sd_base * n_along - du * n_perp_u - dv * n_perp_v
-    For axis-aligned normals this reduces exactly to the classic SD.
+    Returns (sd, normals) where sd has shape (n,) and normals (n, 3).
+    Positive sd = inside material.
     """
     n = len(ray_positions)
     if not segments:
-        return (np.full(n, -1e6), np.ones(n), np.zeros(n), np.zeros(n))
+        return np.full(n, -1e6), np.zeros((n, 3))
 
     seg_arr = np.asarray(segments, dtype=np.float64)   # (n_segs, 8)
-    lo = seg_arr[:, 0]    # (n_segs,)
-    hi = seg_arr[:, 1]    # (n_segs,)
+    lo = seg_arr[:, 0:1]   # (n_segs, 1)
+    hi = seg_arr[:, 1:2]
+    r = ray_positions[np.newaxis, :]  # (1, n)
 
-    # Directed distance from every query position to every boundary
-    # boundary_pos - query_pos  → positive when boundary is above query
-    all_pos = np.concatenate([lo, hi])                       # (2*n_segs,)
-    directed = all_pos[:, np.newaxis] - ray_positions[np.newaxis, :]  # (2B, n)
-    abs_dist = np.abs(directed)
+    inside = (r >= lo) & (r <= hi)
+    dist_lo = r - lo
+    dist_hi = hi - r
+    internal = np.minimum(dist_lo, dist_hi)
 
-    # Nearest boundary for each query point
-    nearest_idx = np.argmin(abs_dist, axis=0)                # (n,)
-    sd_base = directed[nearest_idx, np.arange(n)]            # (n,)
+    any_inside = inside.any(axis=0)
+    inside_sd = np.where(inside, internal, -np.inf).max(axis=0)
 
-    # Normals table: lo normals (cols 2-4), then hi normals (cols 5-7)
-    all_normals = np.concatenate([seg_arr[:, 2:5],
-                                  seg_arr[:, 5:8]], axis=0)  # (2B, 3)
-    normal = all_normals[nearest_idx]                         # (n, 3)
+    # All boundaries and their stored normals
+    all_pos = np.concatenate([seg_arr[:, 0], seg_arr[:, 1]])
+    all_norm = np.concatenate([seg_arr[:, 2:5], seg_arr[:, 5:8]], axis=0)
 
-    # Decompose into along-ray and perpendicular components
-    if axis == "z":
-        return sd_base, normal[:, 2], normal[:, 0], normal[:, 1]
-    elif axis == "x":
-        return sd_base, normal[:, 0], normal[:, 1], normal[:, 2]
-    else:   # y
-        return sd_base, normal[:, 1], normal[:, 0], normal[:, 2]
+    dists = np.abs(ray_positions[:, np.newaxis] - all_pos[np.newaxis, :])
+    nearest_idx = np.argmin(dists, axis=1)
+    nearest_dist = dists[np.arange(n), nearest_idx]
+    normals = all_norm[nearest_idx]
 
-
-def _bilerp_axis_distance(segs_list, ticks_u, ticks_v, nu, nv,
-                          ray_positions, u_positions, v_positions,
-                          grid_res, axis):
-    """Bilinearly-interpolated signed distance field for one dexel axis.
-
-    Uses tangent-plane gradient correction: each corner ray's SD is
-    adjusted by the stored surface normal before bilinear blending,
-    so that tilted cut surfaces interpolate smoothly instead of
-    producing staircase artifacts.
-
-    Returns array of shape (len(u_positions), len(v_positions), len(ray_positions)).
-    """
-    # Pre-compute gradient components for every dexel ray
-    sd_base_all = np.empty((nv, nu, grid_res))
-    n_al_all    = np.empty((nv, nu, grid_res))
-    n_pu_all    = np.empty((nv, nu, grid_res))
-    n_pv_all    = np.empty((nv, nu, grid_res))
-    for iv in range(nv):
-        for iu in range(nu):
-            (sd_base_all[iv, iu, :],
-             n_al_all[iv, iu, :],
-             n_pu_all[iv, iu, :],
-             n_pv_all[iv, iu, :]) = _column_signed_distance_with_grads(
-                segs_list[iv * nu + iu], ray_positions, axis)
-
-    # Fractional positions of voxels within the dexel grid
-    du_tick = ticks_u[1] - ticks_u[0] if nu > 1 else 1.0
-    dv_tick = ticks_v[1] - ticks_v[0] if nv > 1 else 1.0
-    fu = np.clip((u_positions - ticks_u[0]) / du_tick, 0, nu - 1 - 1e-9)
-    fv = np.clip((v_positions - ticks_v[0]) / dv_tick, 0, nv - 1 - 1e-9)
-
-    iu0 = np.floor(fu).astype(int)   # (gu,)
-    iv0 = np.floor(fv).astype(int)   # (gv,)
-    wu = fu - iu0                     # (gu,)
-    wv = fv - iv0                     # (gv,)
-
-    # Perpendicular offsets from each corner ray to the voxel position
-    du_00 = ( wu      * du_tick)[:, np.newaxis, np.newaxis]   # (gu, 1, 1)
-    du_10 = ((wu - 1) * du_tick)[:, np.newaxis, np.newaxis]
-    dv_00 = ( wv      * dv_tick)[np.newaxis, :, np.newaxis]   # (1, gv, 1)
-    dv_01 = ((wv - 1) * dv_tick)[np.newaxis, :, np.newaxis]
-
-    # Helper: gather a (nv, nu, grid_res) array → (gu, gv, grid_res)
-    def _g(arr, iv_idx, iu_idx):
-        return arr[iv_idx[np.newaxis, :], iu_idx[:, np.newaxis], :]
-
-    # Tangent-plane corrected SD at each of the 4 bilinear corners:
-    #   sd_tilted = sd_base * n_along - du_offset * n_perp_u - dv_offset * n_perp_v
-    s00 = (_g(sd_base_all, iv0, iu0)     * _g(n_al_all, iv0, iu0)
-            - du_00 * _g(n_pu_all, iv0, iu0)
-            - dv_00 * _g(n_pv_all, iv0, iu0))
-    s10 = (_g(sd_base_all, iv0, iu0 + 1) * _g(n_al_all, iv0, iu0 + 1)
-            - du_10 * _g(n_pu_all, iv0, iu0 + 1)
-            - dv_00 * _g(n_pv_all, iv0, iu0 + 1))
-    s01 = (_g(sd_base_all, iv0 + 1, iu0) * _g(n_al_all, iv0 + 1, iu0)
-            - du_00 * _g(n_pu_all, iv0 + 1, iu0)
-            - dv_01 * _g(n_pv_all, iv0 + 1, iu0))
-    s11 = (_g(sd_base_all, iv0 + 1, iu0 + 1) * _g(n_al_all, iv0 + 1, iu0 + 1)
-            - du_10 * _g(n_pu_all, iv0 + 1, iu0 + 1)
-            - dv_01 * _g(n_pv_all, iv0 + 1, iu0 + 1))
-
-    wu3 = wu[:, np.newaxis, np.newaxis]   # (gu, 1, 1)
-    wv3 = wv[np.newaxis, :, np.newaxis]   # (1, gv, 1)
-
-    return (s00 * (1 - wu3) * (1 - wv3) +
-            s10 * wu3       * (1 - wv3) +
-            s01 * (1 - wu3) * wv3 +
-            s11 * wu3       * wv3)
+    sd = np.where(any_inside, inside_sd, -nearest_dist)
+    return sd, normals
 
 
 # ---------------------------------------------------------------------------
@@ -767,39 +887,44 @@ class TriDexelDemo:
     # -----------------------------------------------------------------------
 
     def _rebuild_workpiece(self, grid: TriDexelGrid | None = None):
-        """Reconstruct surface via signed distance field from all three dexel axes.
-
-        Uses PyVista's contour (flying edges / marching cubes) on a float
-        distance field.  The float values allow sub-voxel interpolation so
-        the mesh passes through the exact dexel endpoint positions.
-        """
+        """Reconstruct surface via dual contouring from all three dexel axes."""
         if not self.show_mesh:
             self.uncut_actor.SetVisibility(False)
             self.cut_actor.SetVisibility(False)
             return
         g = grid if grid is not None else self.grid
-        img = g.to_distance_field(grid_res=self.resolution * 2)
-
-        surface = img.contour(
-            isosurfaces=[0.0],
-            scalars="distance",
-        )
+        surface = g.to_dual_contour_mesh()
 
         if surface.n_points == 0:
             self.uncut_actor.SetVisibility(False)
             self.cut_actor.SetVisibility(False)
             return
 
-        # Classify faces as uncut (on original bounding box) vs cut (machined)
+        # Compute cell normals first so we can use them for classification
+        surface = surface.compute_normals(
+            cell_normals=True, point_normals=False,
+            auto_orient_normals=True,
+        )
+
+        # Classify faces as uncut stock vs machined.
+        # A face is "uncut" only if its centroid is near a bounding-box face
+        # AND its normal is approximately aligned with that face's outward
+        # direction.  This prevents edge triangles (tilted normals) from
+        # being misclassified as stock.
         xmin, xmax, ymin, ymax, zmin, zmax = WORKPIECE_BOUNDS
         cc = surface.cell_centers().points
-        # Half the voxel spacing as tolerance for boundary detection
+        cn = surface.cell_data["Normals"]
         extent = max(xmax - xmin, ymax - ymin, zmax - zmin)
         tol = extent / self.resolution * 0.6
+        cos_thresh = 0.7   # ~45° alignment required
+
         on_boundary = (
-            (np.abs(cc[:, 0] - xmin) < tol) | (np.abs(cc[:, 0] - xmax) < tol) |
-            (np.abs(cc[:, 1] - ymin) < tol) | (np.abs(cc[:, 1] - ymax) < tol) |
-            (np.abs(cc[:, 2] - zmin) < tol) | (np.abs(cc[:, 2] - zmax) < tol)
+            ((np.abs(cc[:, 0] - xmin) < tol) & (-cn[:, 0] > cos_thresh)) |
+            ((np.abs(cc[:, 0] - xmax) < tol) & ( cn[:, 0] > cos_thresh)) |
+            ((np.abs(cc[:, 1] - ymin) < tol) & (-cn[:, 1] > cos_thresh)) |
+            ((np.abs(cc[:, 1] - ymax) < tol) & ( cn[:, 1] > cos_thresh)) |
+            ((np.abs(cc[:, 2] - zmin) < tol) & (-cn[:, 2] > cos_thresh)) |
+            ((np.abs(cc[:, 2] - zmax) < tol) & ( cn[:, 2] > cos_thresh))
         )
 
         def _extract(mask):
@@ -810,9 +935,7 @@ class TriDexelDemo:
         uncut_surf = _extract(on_boundary)
         cut_surf = _extract(~on_boundary)
 
-        # Compute normals with feature angle: smooth where triangles are
-        # nearly coplanar, sharp edges where the dihedral angle exceeds
-        # the threshold.
+        # Recompute smooth point normals with feature angle for rendering
         feature_angle = 30.0
         if uncut_surf.n_points > 0:
             uncut_surf = uncut_surf.compute_normals(
@@ -1143,7 +1266,7 @@ DEMO_MANIFEST = {
         "- Tri-dexel workpiece representation (X/Y/Z ray segments)\n"
         "- Sphere tool with Boolean subtraction\n"
         "- Zigzag, spiral, contour, and cross-hatch toolpaths\n"
-        "- Signed distance field from all 3 dexel axes → sub-voxel isosurface\n"
+        "- Dual contouring with QEF vertex placement → sharp edges & smooth curves\n"
         "- Two-colour surface: uncut stock vs machined faces\n"
         "- Shadows and balanced three-point lighting\n"
         "- Pre-compute all states for instant slider scrubbing"
